@@ -116,10 +116,27 @@ public class MyscapePlugin extends Plugin
 		// than trying to capture them exactly once at login.
 		if (client.getGameState() == GameState.LOGGED_IN)
 		{
+			boolean justBecameAvailable = currentAccountHash == null;
 			currentAccountHash = client.getAccountHash();
 			if (client.getLocalPlayer() != null)
 			{
 				currentRuneScapeName = client.getLocalPlayer().getName();
+			}
+
+			// onGameStateChanged (below) fires the instant the game
+			// state flips to LOGGED_IN, but getAccountHash() isn't
+			// populated until this tick handler runs afterward -- so
+			// the panel's very first re-check, done from that event,
+			// always read a stale null and got stuck showing "log in
+			// first" even once the player genuinely was logged in (this
+			// also covers starting the plugin while already in-game,
+			// where no GameStateChanged fires at all). Telling the
+			// panel again right here, the moment the hash actually
+			// becomes available, is what the state-changed notification
+			// was supposed to guarantee in the first place.
+			if (justBecameAvailable && panel != null)
+			{
+				panel.onGameStateChanged();
 			}
 		}
 	}

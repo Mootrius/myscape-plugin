@@ -160,15 +160,22 @@ class MyscapePanel extends PluginPanel
 		});
 	}
 
-	/** Called by the plugin whenever the game's login state changes, so
-	 * the "log in first" card swaps for the actual link form (or vice
-	 * versa) without the player having to reopen the panel. */
+	/** Called by the plugin whenever the game's login state changes (or
+	 * the account hash it depends on first becomes available -- see
+	 * MyscapePlugin#onGameTick), so the "log in first" card swaps for
+	 * the actual link form without the player having to reopen the
+	 * panel. Always marshals onto the EDT itself, since -- unlike every
+	 * other panel update here -- both of its callers run on the RuneLite
+	 * client thread, not the EDT, and Swing components may only be
+	 * touched from the EDT. */
 	void onGameStateChanged()
 	{
-		if (!showingLinked)
-		{
-			showLinkOrPrompt();
-		}
+		SwingUtilities.invokeLater(() -> {
+			if (!showingLinked)
+			{
+				showLinkOrPrompt();
+			}
+		});
 	}
 
 	private void showLinkOrPrompt()
