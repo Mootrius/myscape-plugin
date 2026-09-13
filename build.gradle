@@ -51,11 +51,22 @@ test {
 }
 
 // Lets `./gradlew run` launch a local RuneLite client with this plugin
-// side-loaded, the same way RuneLite's own example-plugin does -- the
+// loaded, the same way RuneLite's own example-plugin does -- the
 // fastest inner loop for testing against a real (or dev-mode) account
 // without going through the plugin hub at all.
+//
+// Launching `net.runelite.client.RuneLite` directly here would start a
+// perfectly normal client that silently never loads MyscapePlugin: core
+// plugins are found by scanning the net.runelite.client.plugins package
+// specifically, and developer-mode's other discovery path only picks up
+// .jar files dropped in a sideloaded-plugins directory -- neither one
+// looks at arbitrary classpath entries like our io.myscape.plugin
+// classes. MyscapePluginTest (src/test/java/io/myscape/plugin) is the
+// actual entry point: it calls ExternalPluginManager.loadBuiltin(...)
+// to register our plugin class before handing off to RuneLite.main(),
+// exactly like ExamplePluginTest does in RuneLite's own example-plugin.
 task run(type: JavaExec) {
-    mainClass = 'net.runelite.client.RuneLite'
+    mainClass = 'io.myscape.plugin.MyscapePluginTest'
     classpath = sourceSets.test.runtimeClasspath
     args = ['--developer-mode']
     // RuneLite's own startup code refuses to run in developer mode
