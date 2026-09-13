@@ -2,6 +2,9 @@ package io.myscape.plugin;
 
 import com.google.inject.Provides;
 import java.awt.image.BufferedImage;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import javax.inject.Inject;
 import net.runelite.api.Client;
 import net.runelite.api.GameState;
@@ -48,8 +51,24 @@ public class MyscapePlugin extends Plugin
 	@Inject
 	private MyscapeConfig config;
 
+	@Inject
+	private ScheduledExecutorService executor;
+
+	// The website has its own independent way to unlink (a session-
+	// authenticated "Unlink" button on /dashboard -- see revoke_link()
+	// in the Mootrius/myscape repo's app/routers/linking.py), specifically
+	// so a lost or invalid plugin API key is never a dead end. That
+	// means this client can be unlinked without ever being told
+	// directly, the same way this plugin unlinking doesn't reach an
+	// already-open browser tab either. Polling periodically -- rather
+	// than only checking once in startUp() below -- is what catches
+	// that, so the panel doesn't keep claiming "Linked" long after the
+	// website says otherwise.
+	private static final int LINK_STATUS_POLL_SECONDS = 30;
+
 	private MyscapePanel panel;
 	private NavigationButton navButton;
+	private ScheduledFuture<?> linkStatusPollTask;
 
 	// Only ever written from the client thread (see onGameStateChanged /
 	// onGameTick below, both guaranteed by RuneLite's event bus to run
@@ -81,11 +100,25 @@ public class MyscapePlugin extends Plugin
 		clientToolbar.addNavigation(navButton);
 
 		panel.refreshLinkStatus();
+
+		linkStatusPollTask = executor.scheduleWithFixedDelay(
+			() -> {
+				if (panel != null)
+				{
+					panel.recheckLinkStatusInBackground();
+				}
+			},
+			LINK_STATUS_POLL_SECONDS, LINK_STATUS_POLL_SECONDS, TimeUnit.SECONDS);
 	}
 
 	@Override
 	protected void shutDown()
 	{
+		if (linkStatusPollTask != null)
+		{
+			linkStatusPollTask.cancel(false);
+			linkStatusPollTask = null;
+		}
 		clientToolbar.removeNavigation(navButton);
 		panel = null;
 		currentAccountHash = null;

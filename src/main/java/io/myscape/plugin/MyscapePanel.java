@@ -167,6 +167,46 @@ class MyscapePanel extends PluginPanel
 		});
 	}
 
+	/** Periodic background re-check -- see MyscapePlugin's scheduled poll.
+	 * Unlike refreshLinkStatus() above, this never shows the "Checking..."
+	 * card (it would otherwise flash briefly every poll interval even
+	 * when nothing changed) and silently ignores a failed check instead
+	 * of surfacing an error (a transient network blip during a poll the
+	 * player didn't ask for shouldn't interrupt them -- refreshLinkStatus()'s
+	 * explicit check at startup is what surfaces a real connectivity
+	 * problem). It exists specifically to catch an unlink that happened
+	 * somewhere this client has no direct line to -- the website's own
+	 * "Unlink" button chief among them, since it only needs a browser
+	 * session and has no way to tell this client about it directly. */
+	void recheckLinkStatusInBackground()
+	{
+		client.refreshLinkStatus(new MyscapeClient.StatusCallback()
+		{
+			@Override
+			public void onLinked(String runescapeName)
+			{
+				SwingUtilities.invokeLater(() -> showLinked(runescapeName));
+			}
+
+			@Override
+			public void onNotLinked()
+			{
+				SwingUtilities.invokeLater(() -> {
+					if (showingLinked)
+					{
+						showLinkOrPrompt();
+					}
+				});
+			}
+
+			@Override
+			public void onError(String message)
+			{
+				// Ignored -- see the method doc above.
+			}
+		});
+	}
+
 	/** Called by the plugin whenever the game's login state changes (or
 	 * the account hash it depends on first becomes available -- see
 	 * MyscapePlugin#onGameTick), so the "log in first" card swaps for
