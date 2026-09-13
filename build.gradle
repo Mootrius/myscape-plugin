@@ -64,4 +64,14 @@ task run(type: JavaExec) {
     // safety check, not a bug, so satisfy it rather than working around
     // it.
     jvmArgs = ['-ea']
+    // On macOS, RuneLite's fullscreen handling (OSXFullScreenAdapter)
+    // reaches into com.apple.eawt/sun.awt, which the JVM's module
+    // system hides from unnamed-module code by default -- the real
+    // RuneLite launcher opens both explicitly for exactly this reason
+    // (see runelite/launcher's packr/macos-*-config.json). compileOnly
+    // client, sun.awt, com.apple.eawt exist only on macOS JDKs, so this
+    // is scoped to macOS rather than added unconditionally.
+    if (org.gradle.internal.os.OperatingSystem.current().isMacOsX()) {
+        jvmArgs += ['--add-opens=java.desktop/com.apple.eawt=ALL-UNNAMED', '--add-opens=java.desktop/sun.awt=ALL-UNNAMED']
+    }
 }
