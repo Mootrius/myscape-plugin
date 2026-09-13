@@ -1,0 +1,45 @@
+// RuneLite external plugin build, following the same shape as RuneLite's
+// own plugin-hub example-plugin template: the client jar is `compileOnly`
+// (the real RuneLite client provides it at runtime -- bundling it would
+// just bloat the plugin and risk classpath conflicts), and everything
+// else needed to actually run/test the plugin standalone during
+// development comes in as `testImplementation` from the client's own
+// annotationProcessor/test dependencies.
+plugins {
+    id 'java'
+}
+
+def runeLiteVersion = 'latest.release'
+
+sourceCompatibility = 11
+targetCompatibility = 11
+
+repositories {
+    mavenLocal()
+    maven { url = 'https://repo.runelite.net' }
+    mavenCentral()
+}
+
+dependencies {
+    compileOnly group: 'net.runelite', name: 'client', version: runeLiteVersion
+    annotationProcessor group: 'org.projectlombok', name: 'lombok', version: '1.18.30'
+    compileOnly group: 'org.projectlombok', name: 'lombok', version: '1.18.30'
+
+    testImplementation group: 'net.runelite', name: 'client', version: runeLiteVersion
+    testImplementation group: 'junit', name: 'junit', version: '4.13.2'
+    testImplementation group: 'org.mockito', name: 'mockito-core', version: '4.11.0'
+}
+
+test {
+    useJUnit()
+}
+
+// Lets `./gradlew run` launch a local RuneLite client with this plugin
+// side-loaded, the same way RuneLite's own example-plugin does -- the
+// fastest inner loop for testing against a real (or dev-mode) account
+// without going through the plugin hub at all.
+task run(type: JavaExec) {
+    mainClass = 'net.runelite.client.RuneLite'
+    classpath = sourceSets.test.runtimeClasspath
+    args = ['--developer-mode']
+}
