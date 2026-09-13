@@ -69,7 +69,7 @@ class MyscapeClient
 
 		Request request = new Request.Builder()
 			.url(apiUrl("/api/link/exchange"))
-			.post(RequestBody.create(GSON.toJson(body), JSON))
+			.post(RequestBody.create(JSON, GSON.toJson(body)))
 			.build();
 
 		httpClient.newCall(request).enqueue(new Callback()
