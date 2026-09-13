@@ -49,33 +49,27 @@ tracks purchases or loot yet; see "Next steps" below.
 
 ## Building this
 
-**This has not been compiled or run yet.** It was written in an
-environment where outbound access to `repo.runelite.net`,
-`repo1.maven.org`, and `plugins.gradle.org` was blocked by network
-policy, so I couldn't resolve the `net.runelite:client` dependency or
-generate a proper Gradle wrapper to verify any of this actually builds.
-The code follows RuneLite's plugin API as I know it (the plugin-hub
-`example-plugin` template's shape, `Plugin`/`@PluginDescriptor`,
-`ConfigManager`, `ClientToolbar`/`NavigationButton`, OkHttp's async
-`enqueue`), but there could be a signature or two that's drifted since
-my training data. Please build it and fix whatever the compiler flags
-before relying on it.
+`./gradlew build` compiles clean (zero errors, zero warnings) against
+the real `net.runelite:client` (1.12.38, `latest.release` at the time
+this was verified) -- this was actually run, not just written to look
+right. The wrapper (`gradlew`/`gradlew.bat`/`gradle/wrapper/*`) is
+committed, so no local Gradle install is needed; it downloads Gradle
+8.14.3 on first run.
 
-To build:
+That first real build did catch two genuine bugs the code hadn't been
+checked against before:
 
-1. This repo has no `gradlew` yet (same network restriction above blocked
-   generating one). Either:
-   - Open the folder in IntelliJ IDEA with the Gradle plugin -- it can
-     import and build with its own bundled Gradle, no wrapper needed, or
-   - Run `gradle wrapper --gradle-version 7.6.4` yourself once (needs a
-     local Gradle install, e.g. via Homebrew: `brew install gradle`) to
-     generate `gradlew`/`gradlew.bat`/`gradle/wrapper/*`, then commit
-     those so future clones don't need Gradle preinstalled.
-2. `./gradlew build` (or IntelliJ's Build) to compile and resolve
-   dependencies from Maven Central / `repo.runelite.net`.
-3. `./gradlew run` launches a local RuneLite client in developer mode
-   with this plugin side-loaded -- the fastest way to test the link flow
-   against the real myscape.io API without going through the plugin hub.
+- `CardLayout` is in `java.awt`, not `javax.swing`.
+- RuneLite's bundled OkHttp expects
+  `RequestBody.create(MediaType, String)`, not the newer
+  `(String, MediaType)` overload order.
+
+Both are fixed now. What's *not* verified yet is the actual runtime
+behavior -- linking against a real myscape.io account, in a real
+RuneLite client. `./gradlew run` launches a local RuneLite client in
+developer mode with this plugin side-loaded -- the fastest way to test
+the link flow against the real API without going through the plugin
+hub. Do that before trusting this beyond "it compiles."
 
 ## Next steps (not built yet)
 
