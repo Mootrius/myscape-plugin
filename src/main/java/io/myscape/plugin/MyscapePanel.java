@@ -79,7 +79,7 @@ class MyscapePanel extends PluginPanel
 	{
 		JPanel panel = new JPanel();
 		panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
-		JLabel label = new JLabel("<html>Log into the game, then come back here to link your account.</html>");
+		JLabel label = new JLabel("<html>Please log in to start the plugin.</html>");
 		label.setAlignmentX(Component.LEFT_ALIGNMENT);
 		panel.add(label);
 		return panel;
@@ -90,7 +90,7 @@ class MyscapePanel extends PluginPanel
 		JPanel panel = new JPanel();
 		panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
 
-		JLabel intro = new JLabel("<html>On myscape.io, click “Generate code” and paste it below.</html>");
+		JLabel intro = new JLabel("<html>Please paste in the code from myscape.io</html>");
 		intro.setAlignmentX(Component.LEFT_ALIGNMENT);
 		panel.add(intro);
 		panel.add(Box.createRigidArea(new Dimension(0, 8)));
