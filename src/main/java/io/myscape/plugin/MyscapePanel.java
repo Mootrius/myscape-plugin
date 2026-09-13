@@ -47,6 +47,7 @@ class MyscapePanel extends PluginPanel
 
 	private final JLabel linkedNameLabel = new JLabel();
 	private final JButton unlinkButton = new JButton("Unlink");
+	private final JLabel unlinkErrorLabel = new JLabel();
 
 	private boolean showingLinked;
 
@@ -125,6 +126,12 @@ class MyscapePanel extends PluginPanel
 		unlinkButton.addActionListener(this::onUnlinkClicked);
 		panel.add(unlinkButton);
 
+		unlinkErrorLabel.setForeground(ColorScheme.PROGRESS_ERROR_COLOR);
+		unlinkErrorLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
+		unlinkErrorLabel.setVisible(false);
+		panel.add(Box.createRigidArea(new Dimension(0, 6)));
+		panel.add(unlinkErrorLabel);
+
 		return panel;
 	}
 
@@ -187,6 +194,7 @@ class MyscapePanel extends PluginPanel
 	private void showLinked(String runescapeName)
 	{
 		showingLinked = true;
+		unlinkErrorLabel.setVisible(false);
 		String name = runescapeName != null ? runescapeName : plugin.getRuneScapeName();
 		linkedNameLabel.setText("<html>Linked as <b>" + escape(name != null ? name : "your game account") + "</b></html>");
 		cards.show(cardPanel, CARD_LINKED);
@@ -239,8 +247,29 @@ class MyscapePanel extends PluginPanel
 
 	private void onUnlinkClicked(ActionEvent event)
 	{
-		client.clearStoredLink();
-		showLinkOrPrompt();
+		unlinkErrorLabel.setVisible(false);
+		unlinkButton.setEnabled(false);
+		client.unlink(new MyscapeClient.UnlinkCallback()
+		{
+			@Override
+			public void onSuccess()
+			{
+				SwingUtilities.invokeLater(() -> {
+					unlinkButton.setEnabled(true);
+					showLinkOrPrompt();
+				});
+			}
+
+			@Override
+			public void onFailure(String message)
+			{
+				SwingUtilities.invokeLater(() -> {
+					unlinkButton.setEnabled(true);
+					unlinkErrorLabel.setText("<html>" + escape(message) + "</html>");
+					unlinkErrorLabel.setVisible(true);
+				});
+			}
+		});
 	}
 
 	private static String escape(String s)

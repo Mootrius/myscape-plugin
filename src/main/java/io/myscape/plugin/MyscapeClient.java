@@ -49,6 +49,12 @@ class MyscapeClient
 		void onError(String message);
 	}
 
+	interface UnlinkCallback
+	{
+		void onSuccess();
+		void onFailure(String message);
+	}
+
 	/** Exchanges a short-lived link code (pasted from the website) for a
 	 * long-lived API key, and stores that key -- never shown again after
 	 * this -- plus the player id it belongs to, via ConfigManager. */
@@ -168,10 +174,75 @@ class MyscapeClient
 		});
 	}
 
-	/** Clears the locally stored credential -- used both by the panel's
-	 * "Unlink" button and when the server tells us the key is no longer
-	 * valid. Doesn't call the server (there's no revoke-from-plugin
-	 * endpoint yet; the website is the source of truth for that). */
+	/** Calls the server to actually revoke the link (POST
+	 * /api/players/me/unlink -- see app/main.py in the Mootrius/myscape
+	 * repo), which is what clears account_hash there and brings the
+	 * website's link banner back. Only clears the locally stored
+	 * credential once the server confirms it, rather than forgetting it
+	 * unconditionally: if this call fails (network down, say) and the
+	 * plugin pretended it was unlinked anyway, the forgotten key would
+	 * still be perfectly valid server-side, which is exactly the kind of
+	 * silently-still-linked state this exists to avoid. */
+	void unlink(UnlinkCallback callback)
+	{
+		String apiKey = configManager.getConfiguration(MyscapeConfig.GROUP, MyscapeConfig.API_KEY_KEY);
+		if (apiKey == null || apiKey.isEmpty())
+		{
+			// Nothing stored to revoke -- already effectively unlinked.
+			clearStoredLink();
+			callback.onSuccess();
+			return;
+		}
+
+		Request request = new Request.Builder()
+			.url(apiUrl("/api/players/me/unlink"))
+			.header("Authorization", "Bearer " + apiKey)
+			.post(RequestBody.create(JSON, ""))
+			.build();
+
+		httpClient.newCall(request).enqueue(new Callback()
+		{
+			@Override
+			public void onFailure(Call call, IOException e)
+			{
+				callback.onFailure("Could not reach myscape.io. Check your connection and try again.");
+			}
+
+			@Override
+			public void onResponse(Call call, Response response)
+			{
+				try (Response r = response)
+				{
+					if (r.code() == 401)
+					{
+						// The key was already invalid (revoked/expired) --
+						// there's nothing left to revoke server-side, so
+						// this still counts as a successful unlink.
+						clearStoredLink();
+						callback.onSuccess();
+						return;
+					}
+					if (!r.isSuccessful())
+					{
+						String responseBody = r.body() != null ? r.body().string() : "";
+						callback.onFailure(describeError(r.code(), responseBody));
+						return;
+					}
+					clearStoredLink();
+					callback.onSuccess();
+				}
+				catch (Exception e)
+				{
+					callback.onFailure("Unexpected response from myscape.io.");
+				}
+			}
+		});
+	}
+
+	/** Clears the locally stored credential -- called once #unlink has
+	 * confirmed the server-side revocation succeeded (or found there was
+	 * nothing to revoke), and also when the server tells us during a
+	 * status check that the stored key is no longer valid. */
 	void clearStoredLink()
 	{
 		configManager.unsetConfiguration(MyscapeConfig.GROUP, MyscapeConfig.API_KEY_KEY);
