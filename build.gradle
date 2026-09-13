@@ -30,6 +30,21 @@ dependencies {
     testImplementation group: 'net.runelite', name: 'client', version: runeLiteVersion
     testImplementation group: 'junit', name: 'junit', version: '4.13.2'
     testImplementation group: 'org.mockito', name: 'mockito-core', version: '4.11.0'
+
+    // LWJGL natives for every platform, matching exactly what RuneLite's
+    // own runelite-client/build.gradle.kts does (see its `for (platform
+    // in listOf(...))` block) -- the client artifact we depend on above
+    // doesn't propagate these as transitive dependencies on its own,
+    // which is why `./gradlew run` failed outright without this (it
+    // tried to resolve a single hardcoded classifier instead of picking
+    // one for the actual host). Declaring all seven, same as upstream,
+    // means this works on whatever platform runs it rather than only
+    // the one that happened to write this block.
+    def lwjglVersion = '3.3.2'
+    for (platform in ['linux', 'linux-arm64', 'macos', 'macos-arm64', 'windows-x86', 'windows', 'windows-arm64']) {
+        testRuntimeOnly "org.lwjgl:lwjgl:${lwjglVersion}:natives-${platform}"
+        testRuntimeOnly "org.lwjgl:lwjgl-opengl:${lwjglVersion}:natives-${platform}"
+    }
 }
 
 test {
