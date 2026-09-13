@@ -58,4 +58,10 @@ task run(type: JavaExec) {
     mainClass = 'net.runelite.client.RuneLite'
     classpath = sourceSets.test.runtimeClasspath
     args = ['--developer-mode']
+    // RuneLite's own startup code refuses to run in developer mode
+    // without Java assertions enabled ("Developers should enable
+    // assertions; Add -ea to your JVM arguments") -- it's a deliberate
+    // safety check, not a bug, so satisfy it rather than working around
+    // it.
+    jvmArgs = ['-ea']
 }
