@@ -2,14 +2,22 @@ package io.myscape.plugin;
 
 import com.google.inject.Provides;
 import java.awt.image.BufferedImage;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import javax.inject.Inject;
 import net.runelite.api.Client;
 import net.runelite.api.GameState;
+import net.runelite.api.Item;
+import net.runelite.api.ItemContainer;
 import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.GameTick;
+import net.runelite.api.events.ItemContainerChanged;
+import net.runelite.api.gameval.InventoryID;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.plugins.Plugin;
@@ -20,14 +28,16 @@ import net.runelite.client.util.ImageUtil;
 import okhttp3.OkHttpClient;
 
 /**
- * Links this RuneLite client to a myscape.io account. On its own this
- * plugin doesn't track anything yet -- it's the account-linking half of
- * the two-phase handoff described in myscape's backend
- * (app/models.py / app/routers/linking.py in the Mootrius/myscape repo):
- * the player generates a short-lived code on the website and pastes it
- * into this plugin's side panel, which exchanges it for a long-lived API
- * key. Purchase Goals / Loot Tracker data collection builds on top of
- * that stored key later.
+ * Links this RuneLite client to a myscape.io account (the two-phase
+ * handoff described in myscape's backend -- app/models.py /
+ * app/routers/linking.py in the Mootrius/myscape repo: the player
+ * generates a short-lived code on the website and pastes it into this
+ * plugin's side panel, which exchanges it for a long-lived API key),
+ * and, once linked, keeps the website's copy of the player's bank
+ * contents in sync -- the first piece of real data collection built on
+ * top of that stored key, for the Purchase Goals feature (see
+ * onItemContainerChanged below). Loot Tracker data collection builds on
+ * top of the same link later.
  */
 @PluginDescriptor(
 	name = "myscape",
@@ -66,9 +76,20 @@ public class MyscapePlugin extends Plugin
 	// website says otherwise.
 	private static final int LINK_STATUS_POLL_SECONDS = 30;
 
+	// The bank's ItemContainer fires a change event for every single
+	// deposit/withdraw, not just once the player's done -- syncing on
+	// every one of those would mean several requests a second while
+	// someone's actively banking. Waiting for this many quiet seconds
+	// after the *last* change (see onItemContainerChanged below, which
+	// reschedules this on every event rather than letting an earlier
+	// one fire) collapses a whole banking session into one sync, sent
+	// once things settle.
+	private static final int BANK_SYNC_DEBOUNCE_SECONDS = 2;
+
 	private MyscapePanel panel;
 	private NavigationButton navButton;
 	private ScheduledFuture<?> linkStatusPollTask;
+	private ScheduledFuture<?> bankSyncDebounceTask;
 
 	// Only ever written from the client thread (see onGameStateChanged /
 	// onGameTick below, both guaranteed by RuneLite's event bus to run
@@ -119,10 +140,62 @@ public class MyscapePlugin extends Plugin
 			linkStatusPollTask.cancel(false);
 			linkStatusPollTask = null;
 		}
+		if (bankSyncDebounceTask != null)
+		{
+			bankSyncDebounceTask.cancel(false);
+			bankSyncDebounceTask = null;
+		}
 		clientToolbar.removeNavigation(navButton);
 		panel = null;
 		currentAccountHash = null;
 		currentRuneScapeName = null;
+	}
+
+	@Subscribe
+	public void onItemContainerChanged(ItemContainerChanged event)
+	{
+		if (event.getContainerId() != InventoryID.BANK)
+		{
+			return;
+		}
+		ItemContainer bank = event.getItemContainer();
+		if (bank == null)
+		{
+			return;
+		}
+
+		// Aggregate by item id defensively (a normal bank never actually
+		// splits one item across two slots, but there's no reason to
+		// assume that at this layer when a Map costs nothing extra).
+		// -1/0-quantity entries are how RuneLite represents an empty
+		// slot, not a real item -- skipped rather than sent.
+		Map<Integer, Integer> quantities = new LinkedHashMap<>();
+		for (Item item : bank.getItems())
+		{
+			if (item.getId() <= 0 || item.getQuantity() <= 0)
+			{
+				continue;
+			}
+			quantities.merge(item.getId(), item.getQuantity(), Integer::sum);
+		}
+		List<MyscapeClient.BankItem> items = new ArrayList<>(quantities.size());
+		for (Map.Entry<Integer, Integer> entry : quantities.entrySet())
+		{
+			items.add(new MyscapeClient.BankItem(entry.getKey(), entry.getValue()));
+		}
+
+		if (bankSyncDebounceTask != null)
+		{
+			bankSyncDebounceTask.cancel(false);
+		}
+		bankSyncDebounceTask = executor.schedule(
+			() -> {
+				if (panel != null)
+				{
+					panel.syncBankInBackground(items);
+				}
+			},
+			BANK_SYNC_DEBOUNCE_SECONDS, TimeUnit.SECONDS);
 	}
 
 	@Subscribe

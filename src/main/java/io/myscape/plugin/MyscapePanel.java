@@ -5,6 +5,7 @@ import java.awt.Component;
 import java.awt.CardLayout;
 import java.awt.Dimension;
 import java.awt.event.ActionEvent;
+import java.util.List;
 import javax.swing.BorderFactory;
 import javax.swing.Box;
 import javax.swing.BoxLayout;
@@ -22,7 +23,10 @@ import net.runelite.client.ui.PluginPanel;
  * (app/models.py / app/routers/linking.py): the player pastes the
  * short-lived code shown by the "Generate code" banner on myscape.io in
  * here, and this exchanges it for a long-lived API key that
- * MyscapeClient stores and reuses for every future request.
+ * MyscapeClient stores and reuses for every future request. Also shows
+ * a small status line on the linked card confirming the bank sync
+ * MyscapePlugin triggers in the background is actually working (see
+ * syncBankInBackground below).
  *
  * Four states, one per CardLayout card: checking the stored key against
  * the server on startup, not logged into the game yet (nothing to link
@@ -48,6 +52,7 @@ class MyscapePanel extends PluginPanel
 	private final JLabel linkedNameLabel = new JLabel();
 	private final JButton unlinkButton = new JButton("Unlink");
 	private final JLabel unlinkErrorLabel = new JLabel();
+	private final JLabel bankStatusLabel = new JLabel();
 
 	private boolean showingLinked;
 
@@ -131,6 +136,12 @@ class MyscapePanel extends PluginPanel
 		unlinkErrorLabel.setVisible(false);
 		panel.add(Box.createRigidArea(new Dimension(0, 6)));
 		panel.add(unlinkErrorLabel);
+
+		bankStatusLabel.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
+		bankStatusLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
+		bankStatusLabel.setVisible(false);
+		panel.add(Box.createRigidArea(new Dimension(0, 10)));
+		panel.add(bankStatusLabel);
 
 		return panel;
 	}
@@ -235,6 +246,7 @@ class MyscapePanel extends PluginPanel
 	{
 		showingLinked = true;
 		unlinkErrorLabel.setVisible(false);
+		bankStatusLabel.setVisible(false);
 		String name = runescapeName != null ? runescapeName : plugin.getRuneScapeName();
 		linkedNameLabel.setText("<html>Linked as <b>" + escape(name != null ? name : "your game account") + "</b></html>");
 		cards.show(cardPanel, CARD_LINKED);
@@ -308,6 +320,41 @@ class MyscapePanel extends PluginPanel
 					unlinkErrorLabel.setText("<html>" + escape(message) + "</html>");
 					unlinkErrorLabel.setVisible(true);
 				});
+			}
+		});
+	}
+
+	/** Called by the plugin (see MyscapePlugin#onItemContainerChanged),
+	 * off the EDT, once the bank's contents have settled after a change
+	 * -- syncs the full snapshot and, on success, updates the small
+	 * status line on the linked card so there's some visible
+	 * confirmation this is actually working, the same way linking and
+	 * unlinking already give feedback. A failure here is shown the same
+	 * quiet way the background link-status poll handles one (see
+	 * MyscapePanel#recheckLinkStatusInBackground) -- this runs
+	 * unprompted in the background, not from a button click, so it
+	 * shouldn't interrupt the player the way a failed explicit action
+	 * would; the next bank change just tries again. */
+	void syncBankInBackground(List<MyscapeClient.BankItem> items)
+	{
+		client.syncBank(items, new MyscapeClient.BankSyncCallback()
+		{
+			@Override
+			public void onSuccess(int itemCount)
+			{
+				SwingUtilities.invokeLater(() -> {
+					if (showingLinked)
+					{
+						bankStatusLabel.setText("Bank synced (" + itemCount + " items)");
+						bankStatusLabel.setVisible(true);
+					}
+				});
+			}
+
+			@Override
+			public void onFailure(String message)
+			{
+				// Ignored -- see the method doc above.
 			}
 		});
 	}

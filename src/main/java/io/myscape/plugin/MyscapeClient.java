@@ -1,8 +1,10 @@
 package io.myscape.plugin;
 
 import com.google.gson.Gson;
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import java.io.IOException;
+import java.util.List;
 import net.runelite.client.config.ConfigManager;
 import okhttp3.Call;
 import okhttp3.Callback;
@@ -13,12 +15,13 @@ import okhttp3.RequestBody;
 import okhttp3.Response;
 
 /**
- * Talks to myscape.io's account-linking endpoints -- POST
- * /api/link/exchange and GET /api/players/me (see app/routers/linking.py
- * and app/main.py in the Mootrius/myscape repo for the server side of
- * this contract). Everything here is async (OkHttp's enqueue/Callback):
- * every caller is a Swing button handler or plugin startup, and blocking
- * either would freeze the client UI.
+ * Talks to myscape.io's account-linking and bank-sync endpoints -- POST
+ * /api/link/exchange, GET /api/players/me, and POST
+ * /api/players/me/bank (see app/routers/linking.py and app/main.py in
+ * the Mootrius/myscape repo for the server side of this contract).
+ * Everything here is async (OkHttp's enqueue/Callback): every caller is
+ * a Swing button handler, plugin startup, or a background event
+ * handler, and blocking any of those would freeze the client UI.
  */
 class MyscapeClient
 {
@@ -34,6 +37,23 @@ class MyscapeClient
 		this.httpClient = httpClient;
 		this.config = config;
 		this.configManager = configManager;
+	}
+
+	/** One bank slot's contents -- just enough for the server to know
+	 * what's owned and how many (see BankItem in the Mootrius/myscape
+	 * repo's app/models.py). Item names/prices are looked up server-side,
+	 * not sent from here, so this plugin doesn't need its own copy of
+	 * that data. */
+	static final class BankItem
+	{
+		final int itemId;
+		final int quantity;
+
+		BankItem(int itemId, int quantity)
+		{
+			this.itemId = itemId;
+			this.quantity = quantity;
+		}
 	}
 
 	interface LinkCallback
@@ -52,6 +72,12 @@ class MyscapeClient
 	interface UnlinkCallback
 	{
 		void onSuccess();
+		void onFailure(String message);
+	}
+
+	interface BankSyncCallback
+	{
+		void onSuccess(int itemCount);
 		void onFailure(String message);
 	}
 
@@ -230,6 +256,84 @@ class MyscapeClient
 					}
 					clearStoredLink();
 					callback.onSuccess();
+				}
+				catch (Exception e)
+				{
+					callback.onFailure("Unexpected response from myscape.io.");
+				}
+			}
+		});
+	}
+
+	/** Sends the current full bank snapshot to myscape.io (POST
+	 * /api/players/me/bank -- see app/main.py in the Mootrius/myscape
+	 * repo), for the Purchase Goals feature to eventually compare
+	 * against. Always a full replace server-side, never a merge -- see
+	 * that endpoint's docstring -- so this should always be called with
+	 * *everything* currently in the bank, not just what changed.
+	 *
+	 * Silently does nothing if not currently linked: there's no key to
+	 * authenticate with, and more importantly nothing to attribute the
+	 * snapshot to, so there's no failure worth surfacing to the player
+	 * here the way there is for an explicit action like linking or
+	 * unlinking -- this runs automatically in the background every time
+	 * the bank changes, whether or not the player has gotten around to
+	 * linking yet. */
+	void syncBank(List<BankItem> items, BankSyncCallback callback)
+	{
+		String apiKey = configManager.getConfiguration(MyscapeConfig.GROUP, MyscapeConfig.API_KEY_KEY);
+		if (apiKey == null || apiKey.isEmpty())
+		{
+			return;
+		}
+
+		JsonArray itemsJson = new JsonArray();
+		for (BankItem item : items)
+		{
+			JsonObject itemJson = new JsonObject();
+			itemJson.addProperty("item_id", item.itemId);
+			itemJson.addProperty("quantity", item.quantity);
+			itemsJson.add(itemJson);
+		}
+		JsonObject body = new JsonObject();
+		body.add("items", itemsJson);
+
+		Request request = new Request.Builder()
+			.url(apiUrl("/api/players/me/bank"))
+			.header("Authorization", "Bearer " + apiKey)
+			.post(RequestBody.create(JSON, GSON.toJson(body)))
+			.build();
+
+		httpClient.newCall(request).enqueue(new Callback()
+		{
+			@Override
+			public void onFailure(Call call, IOException e)
+			{
+				callback.onFailure("Could not reach myscape.io. Check your connection and try again.");
+			}
+
+			@Override
+			public void onResponse(Call call, Response response)
+			{
+				try (Response r = response)
+				{
+					if (r.code() == 401)
+					{
+						// Key was revoked server-side since we last checked --
+						// same handling as #refreshLinkStatus, so the plugin
+						// doesn't keep quietly retrying with a dead key.
+						clearStoredLink();
+						callback.onFailure("No longer linked to myscape.io.");
+						return;
+					}
+					String responseBody = r.body() != null ? r.body().string() : "";
+					if (!r.isSuccessful())
+					{
+						callback.onFailure(describeError(r.code(), responseBody));
+						return;
+					}
+					JsonObject json = GSON.fromJson(responseBody, JsonObject.class);
+					callback.onSuccess(json.get("item_count").getAsInt());
 				}
 				catch (Exception e)
 				{

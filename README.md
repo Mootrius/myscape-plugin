@@ -7,29 +7,34 @@ PostgreSQL backend and website both this plugin and the browser talk to.
 
 ## What's here right now
 
-Just account linking -- the prerequisite for everything else. Nothing
-tracks purchases or loot yet; see "Next steps" below.
+Account linking, plus the first real piece of data collection built on
+top of it: automatic bank syncing. Nothing tracks loot yet; see "Next
+steps" below.
 
 - `src/main/java/io/myscape/plugin/MyscapePlugin.java` -- the plugin
-  entry point. Adds a sidebar icon/panel, and tracks the logged-in
-  player's RuneLite `account_hash` and display name on the client thread
-  so the panel can read them safely from Swing.
+  entry point. Adds a sidebar icon/panel, tracks the logged-in player's
+  RuneLite `account_hash` and display name on the client thread so the
+  panel can read them safely from Swing, and (see "Bank sync" below)
+  subscribes to bank content changes and debounces them into a synced
+  snapshot.
 - `MyscapeConfig.java` -- just an `apiBaseUrl` setting (defaults to
   `https://myscape.io`; only worth changing to point at a local dev
   server). The link state itself (API key, player id, display name)
   is stored via `ConfigManager` directly rather than as a visible config
   field -- it's not something a player should ever hand-type or see
   echoed back in the settings panel.
-- `MyscapeClient.java` -- calls the backend's two linking endpoints:
-  `POST /api/link/exchange` (trade a link code for a long-lived API key)
-  and `GET /api/players/me` (confirm a stored key is still valid). See
+- `MyscapeClient.java` -- calls the backend's linking endpoints
+  (`POST /api/link/exchange` to trade a link code for a long-lived API
+  key, `GET /api/players/me` to confirm a stored key is still valid) and
+  `syncBank()` (`POST /api/players/me/bank`, see "Bank sync" below). See
   `app/routers/linking.py` and `app/models.py` in the myscape repo for
   the full design rationale behind the two-phase link-code/API-key
   handoff.
 - `MyscapePanel.java` -- the sidebar panel: paste the code shown by
   myscape.io's "Generate code" banner, link, and see "Linked as
-  \<name\>" (with an Unlink button) afterward. Shows a "log into the
-  game first" state if there's no account hash to link with yet.
+  \<name\>" (with an Unlink button) afterward, plus a small status line
+  reflecting the most recent bank sync. Shows a "log into the game
+  first" state if there's no account hash to link with yet.
 
 ## How linking works, end to end
 
@@ -46,6 +51,28 @@ tracks purchases or loot yet; see "Next steps" below.
    `ConfigManager` and sends it as `Authorization: Bearer <key>` on
    every future request -- `GET /api/players/me` on startup, to confirm
    the stored key is still valid before showing "Linked".
+
+## Bank sync
+
+Once linked, the plugin subscribes to `ItemContainerChanged` and, on
+every event for the bank container (`net.runelite.api.gameval
+.InventoryID.BANK` -- the non-deprecated replacement for the older
+`net.runelite.api.InventoryID.BANK` enum, confirmed via `javap`),
+reads the bank's full `Item[]`, aggregates quantities by item id, and
+reschedules a single debounced sync 2 seconds out (`onItemContainer
+Changed` in `MyscapePlugin.java`). The bank's container fires a change
+event for every individual deposit/withdraw, not just once a player's
+done, so this collapses a whole banking session into one request sent
+once things settle, rather than several a second while someone's
+actively banking.
+
+That debounced sync calls `MyscapeClient#syncBank`, which POSTs the
+full item list to `POST /api/players/me/bank` (API-key authenticated).
+It's always a full replace, never a merge -- the backend deletes and
+re-inserts, so an item sold or withdrawn since the last sync
+disappears server-side too, matching what actually happened in the
+bank. See "Bank sync" in the myscape repo's README for the backend
+side of this.
 
 ## Building this
 
@@ -73,8 +100,10 @@ hub. Do that before trusting this beyond "it compiles."
 
 ## Next steps (not built yet)
 
-- Purchase Goals: read bank/inventory/GE data and POST it to the
-  backend once that data model/API exists there.
+- Purchase Goals: bank reading/syncing is done (see "Bank sync" above);
+  inventory and GE data aren't collected yet, and the website side still
+  doesn't display any of it -- the dashboard's Purchase Goals card is
+  still a placeholder.
 - Loot Tracker: subscribe to RuneLite's loot-received events (NPC kills,
   chests, etc.) and POST them to the backend once that data model/API
   exists there.
