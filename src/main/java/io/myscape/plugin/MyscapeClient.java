@@ -15,13 +15,14 @@ import okhttp3.RequestBody;
 import okhttp3.Response;
 
 /**
- * Talks to myscape.io's account-linking and bank-sync endpoints -- POST
+ * Talks to myscape.io's account-linking and item-sync endpoints -- POST
  * /api/link/exchange, GET /api/players/me, and POST
- * /api/players/me/bank (see app/routers/linking.py and app/main.py in
- * the Mootrius/myscape repo for the server side of this contract).
- * Everything here is async (OkHttp's enqueue/Callback): every caller is
- * a Swing button handler, plugin startup, or a background event
- * handler, and blocking any of those would freeze the client UI.
+ * /api/players/me/{bank,inventory,equipment} (see app/routers/linking.py
+ * and app/main.py in the Mootrius/myscape repo for the server side of
+ * this contract). Everything here is async (OkHttp's enqueue/Callback):
+ * every caller is a Swing button handler, plugin startup, or a
+ * background event handler, and blocking any of those would freeze the
+ * client UI.
  */
 class MyscapeClient
 {
@@ -41,17 +42,64 @@ class MyscapeClient
 
 	/** One bank slot's contents -- just enough for the server to know
 	 * what's owned and how many (see BankItem in the Mootrius/myscape
-	 * repo's app/models.py). Item names/prices are looked up server-side,
-	 * not sent from here, so this plugin doesn't need its own copy of
-	 * that data. */
+	 * repo's app/models.py). A *tradeable* item's name/icon/price are
+	 * looked up server-side from the wiki's GE mapping, not sent from
+	 * here -- itemName exists only so an untradeable item (which has no
+	 * entry in that mapping at all) can still be matched by name against
+	 * a gear-setup slot the player typed it into by hand; see BankItem's
+	 * docstring server-side for the full rationale. Always populated
+	 * (see MyscapePlugin's item-reading methods), even though only the
+	 * untradeable case ever actually needs it -- simpler than this
+	 * plugin having to know ahead of time which items are tradeable. */
 	static final class BankItem
 	{
 		final int itemId;
+		final String itemName;
 		final int quantity;
 
-		BankItem(int itemId, int quantity)
+		BankItem(int itemId, String itemName, int quantity)
 		{
 			this.itemId = itemId;
+			this.itemName = itemName;
+			this.quantity = quantity;
+		}
+	}
+
+	/** Same shape as BankItem, kept as its own type (rather than reusing
+	 * BankItem) so a caller can never accidentally pass one container's
+	 * snapshot to the other's sync method -- see InventoryItem in the
+	 * Mootrius/myscape repo's app/models.py for the server side. */
+	static final class InventoryItem
+	{
+		final int itemId;
+		final String itemName;
+		final int quantity;
+
+		InventoryItem(int itemId, String itemName, int quantity)
+		{
+			this.itemId = itemId;
+			this.itemName = itemName;
+			this.quantity = quantity;
+		}
+	}
+
+	/** One worn equipment slot -- unlike Bank/InventoryItem this also
+	 * carries which slot it's in ("head", "weapon", ..., matching
+	 * EQUIPMENT_SLOTS in the original Maintrius tool this is replacing),
+	 * since equipment is keyed by slot server-side rather than being a
+	 * flat list (see EquipmentItem in app/models.py). */
+	static final class EquipmentItem
+	{
+		final String slot;
+		final int itemId;
+		final String itemName;
+		final int quantity;
+
+		EquipmentItem(String slot, int itemId, String itemName, int quantity)
+		{
+			this.slot = slot;
+			this.itemId = itemId;
+			this.itemName = itemName;
 			this.quantity = quantity;
 		}
 	}
@@ -75,7 +123,11 @@ class MyscapeClient
 		void onFailure(String message);
 	}
 
-	interface BankSyncCallback
+	/** Shared by every item-sync method (bank/inventory/equipment) -- all
+	 * three POST an {"items": [...]} body and get back the same
+	 * {"item_count": N} shape, so one callback interface covers all of
+	 * them rather than three identical ones. */
+	interface SyncCallback
 	{
 		void onSuccess(int itemCount);
 		void onFailure(String message);
@@ -267,19 +319,70 @@ class MyscapeClient
 
 	/** Sends the current full bank snapshot to myscape.io (POST
 	 * /api/players/me/bank -- see app/main.py in the Mootrius/myscape
-	 * repo), for the Purchase Goals feature to eventually compare
-	 * against. Always a full replace server-side, never a merge -- see
-	 * that endpoint's docstring -- so this should always be called with
-	 * *everything* currently in the bank, not just what changed.
+	 * repo), for the Purchase Goals feature to compare against. Always a
+	 * full replace server-side, never a merge -- see that endpoint's
+	 * docstring -- so this should always be called with *everything*
+	 * currently in the bank, not just what changed. */
+	void syncBank(List<BankItem> items, SyncCallback callback)
+	{
+		JsonArray itemsJson = new JsonArray();
+		for (BankItem item : items)
+		{
+			JsonObject itemJson = new JsonObject();
+			itemJson.addProperty("item_id", item.itemId);
+			itemJson.addProperty("item_name", item.itemName);
+			itemJson.addProperty("quantity", item.quantity);
+			itemsJson.add(itemJson);
+		}
+		syncItems("/api/players/me/bank", itemsJson, callback);
+	}
+
+	/** Same deal as syncBank, for the main 28-slot inventory (POST
+	 * /api/players/me/inventory). */
+	void syncInventory(List<InventoryItem> items, SyncCallback callback)
+	{
+		JsonArray itemsJson = new JsonArray();
+		for (InventoryItem item : items)
+		{
+			JsonObject itemJson = new JsonObject();
+			itemJson.addProperty("item_id", item.itemId);
+			itemJson.addProperty("item_name", item.itemName);
+			itemJson.addProperty("quantity", item.quantity);
+			itemsJson.add(itemJson);
+		}
+		syncItems("/api/players/me/inventory", itemsJson, callback);
+	}
+
+	/** Same deal as syncBank, for worn equipment (POST
+	 * /api/players/me/equipment) -- each item also carries its slot,
+	 * since equipment is keyed by slot server-side, not a flat list. */
+	void syncEquipment(List<EquipmentItem> items, SyncCallback callback)
+	{
+		JsonArray itemsJson = new JsonArray();
+		for (EquipmentItem item : items)
+		{
+			JsonObject itemJson = new JsonObject();
+			itemJson.addProperty("slot", item.slot);
+			itemJson.addProperty("item_id", item.itemId);
+			itemJson.addProperty("item_name", item.itemName);
+			itemJson.addProperty("quantity", item.quantity);
+			itemsJson.add(itemJson);
+		}
+		syncItems("/api/players/me/equipment", itemsJson, callback);
+	}
+
+	/** Shared by syncBank/syncInventory/syncEquipment -- all three POST
+	 * an {"items": [...]} body to their own path and get back the same
+	 * {"item_count": N} response.
 	 *
 	 * Silently does nothing if not currently linked: there's no key to
 	 * authenticate with, and more importantly nothing to attribute the
 	 * snapshot to, so there's no failure worth surfacing to the player
 	 * here the way there is for an explicit action like linking or
-	 * unlinking -- this runs automatically in the background every time
-	 * the bank changes, whether or not the player has gotten around to
-	 * linking yet. */
-	void syncBank(List<BankItem> items, BankSyncCallback callback)
+	 * unlinking -- these run automatically in the background every time
+	 * the relevant container changes, whether or not the player has
+	 * gotten around to linking yet. */
+	private void syncItems(String path, JsonArray itemsJson, SyncCallback callback)
 	{
 		String apiKey = configManager.getConfiguration(MyscapeConfig.GROUP, MyscapeConfig.API_KEY_KEY);
 		if (apiKey == null || apiKey.isEmpty())
@@ -287,19 +390,11 @@ class MyscapeClient
 			return;
 		}
 
-		JsonArray itemsJson = new JsonArray();
-		for (BankItem item : items)
-		{
-			JsonObject itemJson = new JsonObject();
-			itemJson.addProperty("item_id", item.itemId);
-			itemJson.addProperty("quantity", item.quantity);
-			itemsJson.add(itemJson);
-		}
 		JsonObject body = new JsonObject();
 		body.add("items", itemsJson);
 
 		Request request = new Request.Builder()
-			.url(apiUrl("/api/players/me/bank"))
+			.url(apiUrl(path))
 			.header("Authorization", "Bearer " + apiKey)
 			.post(RequestBody.create(JSON, GSON.toJson(body)))
 			.build();

@@ -7,16 +7,18 @@ PostgreSQL backend and website both this plugin and the browser talk to.
 
 ## What's here right now
 
-Account linking, plus the first real piece of data collection built on
-top of it: automatic bank syncing. Nothing tracks loot yet; see "Next
-steps" below.
+Account linking, plus the character data collection built on top of it:
+automatic bank, inventory, and worn-equipment syncing, which is what
+feeds the website's Purchase Goals feature. Nothing tracks loot yet; see
+"Next steps" below.
 
 - `src/main/java/io/myscape/plugin/MyscapePlugin.java` -- the plugin
   entry point. Adds a sidebar icon/panel, tracks the logged-in player's
   RuneLite `account_hash` and display name on the client thread so the
-  panel can read them safely from Swing, and (see "Bank sync" below)
-  subscribes to bank content changes and debounces them into a synced
-  snapshot.
+  panel can read them safely from Swing, and (see "Bank, inventory, and
+  equipment sync" below) subscribes to all three containers' content
+  changes and debounces them into synced snapshots behind one shared
+  timer.
 - `MyscapeConfig.java` -- just an `apiBaseUrl` setting (defaults to
   `https://myscape.io`; only worth changing to point at a local dev
   server). The link state itself (API key, player id, display name)
@@ -26,15 +28,17 @@ steps" below.
 - `MyscapeClient.java` -- calls the backend's linking endpoints
   (`POST /api/link/exchange` to trade a link code for a long-lived API
   key, `GET /api/players/me` to confirm a stored key is still valid) and
-  `syncBank()` (`POST /api/players/me/bank`, see "Bank sync" below). See
-  `app/routers/linking.py` and `app/models.py` in the myscape repo for
-  the full design rationale behind the two-phase link-code/API-key
-  handoff.
+  `syncBank()`/`syncInventory()`/`syncEquipment()` (`POST
+  /api/players/me/bank`/`.../inventory`/`.../equipment`, see "Bank,
+  inventory, and equipment sync" below). See `app/routers/linking.py`
+  and `app/models.py` in the myscape repo for the full design rationale
+  behind the two-phase link-code/API-key handoff.
 - `MyscapePanel.java` -- the sidebar panel: paste the code shown by
   myscape.io's "Generate code" banner, link, and see "Linked as
   \<name\>" (with an Unlink button) afterward, plus a small status line
-  reflecting the most recent bank sync. Shows a "log into the game
-  first" state if there's no account hash to link with yet.
+  reflecting the most recent sync of each container (e.g. "Synced: 24
+  bank, 28 inventory, 11 equipment"). Shows a "log into the game first"
+  state if there's no account hash to link with yet.
 
 ## How linking works, end to end
 
@@ -52,27 +56,53 @@ steps" below.
    every future request -- `GET /api/players/me` on startup, to confirm
    the stored key is still valid before showing "Linked".
 
-## Bank sync
+## Bank, inventory, and equipment sync
 
-Once linked, the plugin subscribes to `ItemContainerChanged` and, on
-every event for the bank container (`net.runelite.api.gameval
-.InventoryID.BANK` -- the non-deprecated replacement for the older
-`net.runelite.api.InventoryID.BANK` enum, confirmed via `javap`),
-reads the bank's full `Item[]`, aggregates quantities by item id, and
-reschedules a single debounced sync 2 seconds out (`onItemContainer
-Changed` in `MyscapePlugin.java`). The bank's container fires a change
-event for every individual deposit/withdraw, not just once a player's
-done, so this collapses a whole banking session into one request sent
-once things settle, rather than several a second while someone's
-actively banking.
+Once linked, the plugin subscribes to `ItemContainerChanged` and
+branches on which container changed (`net.runelite.api.gameval
+.InventoryID.BANK`/`.INV`/`.WORN` -- the non-deprecated replacements for
+the older `net.runelite.api.InventoryID` enum values, confirmed via
+`javap`). Each container is read on the client thread the moment it
+changes (`onItemContainerChanged` in `MyscapePlugin.java`) -- bank and
+inventory contents are aggregated by item id first (a container can
+report the same item split across multiple stack slots), while
+equipment is read slot-by-slot instead, since a worn item's *slot* is
+what matters, not a quantity total. Inventory and equipment are also
+read proactively at login (`onGameTick`'s `justBecameAvailable` branch),
+since unlike the bank they're always populated and don't need an
+interface opened first to report anything.
 
-That debounced sync calls `MyscapeClient#syncBank`, which POSTs the
-full item list to `POST /api/players/me/bank` (API-key authenticated).
-It's always a full replace, never a merge -- the backend deletes and
-re-inserts, so an item sold or withdrawn since the last sync
-disappears server-side too, matching what actually happened in the
-bank. See "Bank sync" in the myscape repo's README for the backend
-side of this.
+Every item read this way also gets its display name resolved via
+`ItemManager#getItemComposition(int).getName()` (`resolveItemName`,
+client-thread-only) alongside its id -- needed because an untradeable
+item has no entry in the OSRS Wiki's price mapping the website's
+Purchase Goals feature prices tradeable items against, so the *only*
+way it can ever be recognized as "already owned" is by name instead.
+Sent for every item regardless of tradeability, since there's no cheap
+way to know ahead of time which items are which.
+
+All three containers' changes are debounced behind one shared 2-second
+timer rather than three independent ones (`scheduleSyncDebounced` /
+`SYNC_DEBOUNCE_SECONDS`) -- a player actively shopping (withdrawing GP
+and gear from the bank, moving it into inventory, equipping it) tends to
+touch more than one container in a single burst, so one shared debounce
+collapses that whole burst into as few requests as possible, the same
+way the bank's own debounce did before this. RuneLite's `Client` and its
+`ItemContainer`s may only safely be read from the client thread, so each
+container's contents are captured into plain-data snapshots
+synchronously on that thread and stashed in `volatile` fields; the
+debounce timer itself runs on a background executor and only ever reads
+those already-converted snapshots, never touching `Client` directly.
+
+When the timer fires, `MyscapePanel#syncInBackground` calls whichever of
+`MyscapeClient#syncBank`/`syncInventory`/`syncEquipment` have fresh data,
+each POSTing to its own endpoint (`.../bank`, `.../inventory`,
+`.../equipment`, all API-key authenticated). Every one is always a full
+replace, never a merge -- the backend deletes and re-inserts, so an item
+sold, withdrawn, or unequipped since the last sync disappears
+server-side too, matching what actually happened in the game. See
+"Bank, inventory, and equipment sync" in the myscape repo's README for
+the backend side of this.
 
 ## Building this
 
@@ -91,19 +121,33 @@ checked against before:
   `RequestBody.create(MediaType, String)`, not the newer
   `(String, MediaType)` overload order.
 
-Both are fixed now. What's *not* verified yet is the actual runtime
-behavior -- linking against a real myscape.io account, in a real
-RuneLite client. `./gradlew run` launches a local RuneLite client in
+Both are fixed now. `./gradlew run` launches a local RuneLite client in
 developer mode with this plugin side-loaded -- the fastest way to test
-the link flow against the real API without going through the plugin
-hub. Do that before trusting this beyond "it compiles."
+against the real API without going through the plugin hub. Run in a
+headless sandbox (no display), it gets as far as RuneLite's own startup
+UI before hitting `java.awt.HeadlessException` trying to open its
+window -- expected there and not a plugin issue, since nothing about
+loading *this* plugin ever runs before RuneLite's own UI does. One
+`ERROR injected-client - Client error` line also appears during that
+run; that's RuneLite's injected-client test harness logging its own
+expected failure mode in a headless environment, not this plugin's
+code -- confirmed by checking what actually logs it, and unchanged
+across every verification pass since. Compiling clean and reaching that
+same, already-understood wall (with no *new* errors) after each round of
+changes -- most recently the inventory/equipment sync above -- is the
+bar this has been held to in a sandbox without a real game client to
+link against; actually linking against a real myscape.io account in a
+real RuneLite client, with a display, is still the real end-to-end test
+and hasn't been done.
 
 ## Next steps (not built yet)
 
-- Purchase Goals: bank reading/syncing is done (see "Bank sync" above);
-  inventory and GE data aren't collected yet, and the website side still
-  doesn't display any of it -- the dashboard's Purchase Goals card is
-  still a placeholder.
+- ~~Purchase Goals: bank reading/syncing is done; inventory and GE data
+  aren't collected yet, and the website side still doesn't display any
+  of it~~ done -- bank, inventory, and equipment are all synced (see
+  "Bank, inventory, and equipment sync" above) and the website's
+  Purchase Goals page reads all three live, at
+  `/dashboard/purchase-goals` in the myscape repo.
 - Loot Tracker: subscribe to RuneLite's loot-received events (NPC kills,
   chests, etc.) and POST them to the backend once that data model/API
   exists there.
