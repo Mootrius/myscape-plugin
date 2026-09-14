@@ -2,11 +2,13 @@ package io.myscape.plugin;
 
 import com.google.inject.Provides;
 import java.awt.image.BufferedImage;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
@@ -28,8 +30,10 @@ import net.runelite.api.gameval.VarbitID;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.game.ItemManager;
+import net.runelite.client.game.ItemStack;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
+import net.runelite.client.plugins.loottracker.LootReceived;
 import net.runelite.client.ui.ClientToolbar;
 import net.runelite.client.ui.NavigationButton;
 import net.runelite.client.util.ImageUtil;
@@ -42,10 +46,11 @@ import okhttp3.OkHttpClient;
  * generates a short-lived code on the website and pastes it into this
  * plugin's side panel, which exchanges it for a long-lived API key),
  * and, once linked, keeps the website's copy of the player's bank,
- * inventory, worn equipment, and Potion Storage in sync -- the data
- * collection the Purchase Goals feature is built on (see
- * onItemContainerChanged, onGameTick, and onVarbitChanged below). Loot
- * Tracker data collection builds on top of the same link later.
+ * inventory, worn equipment, Rune Pouch, and Potion Storage in sync --
+ * the data collection the Purchase Goals feature is built on (see
+ * onItemContainerChanged, onGameTick, and onVarbitChanged below) -- and
+ * reports every kill/clue-casket/pickpocket's loot as it happens (see
+ * onLootReceived below), which the Loot Tracker feature is built on.
  */
 @PluginDescriptor(
 	name = "myscape",
@@ -567,6 +572,77 @@ public class MyscapePlugin extends Plugin
 		}
 
 		scheduleSyncDebounced();
+	}
+
+	/** Fires the moment a kill/clue-casket/pickpocket hands over loot --
+	 * published by RuneLite's own bundled "Loot Tracker" core plugin
+	 * (net.runelite.client.plugins.loottracker), not a raw game-state
+	 * event -- the same integration point real third-party loot-logging
+	 * plugins use rather than reimplementing NPC-death loot detection
+	 * from scratch (diffing ground items around a death tile, handling
+	 * despawn timers, multi-target loot, ...), which is exactly why
+	 * that's the dependency here too. Requires RuneLite's bundled Loot
+	 * Tracker plugin to stay enabled -- if the player has turned it off,
+	 * this event simply never fires, same as any other plugin that
+	 * depends on it.
+	 *
+	 * Unlike bank/inventory/equipment/potion storage/rune pouch above,
+	 * a loot event isn't "current state" to snapshot and debounce -- it's
+	 * a discrete thing that already happened, so this builds and sends
+	 * it immediately (via panel#syncLootInBackground) rather than
+	 * folding it into scheduleSyncDebounced. See LootEvent's docstring
+	 * in the Mootrius/myscape repo's app/models.py for the full
+	 * rationale, including why each event carries its own
+	 * client-generated id.
+	 *
+	 * event.getType() is RuneLite's own LootRecordType (NPC/PLAYER/
+	 * EVENT/PICKPOCKET/UNKNOWN) -- passed through by name rather than
+	 * switched on, so a value this code doesn't specifically know about
+	 * still syncs correctly instead of being silently dropped. Every
+	 * clue casket comes through with event.getName() as the bare word
+	 * "Casket", no tier -- a real limitation of this event, not
+	 * something worked around here (see app/loot.py's module docstring
+	 * server-side). combatLevel is -1 for anything without one (a
+	 * casket, a pickpocket target) -- translated to null below rather
+	 * than synced as a fake level. */
+	@Subscribe
+	public void onLootReceived(LootReceived event)
+	{
+		if (panel == null)
+		{
+			return;
+		}
+
+		Map<Integer, Integer> quantities = new LinkedHashMap<>();
+		for (ItemStack stack : event.getItems())
+		{
+			if (stack.getId() <= 0 || stack.getQuantity() <= 0)
+			{
+				continue;
+			}
+			quantities.merge(stack.getId(), stack.getQuantity(), Integer::sum);
+		}
+		if (quantities.isEmpty())
+		{
+			return;
+		}
+
+		List<MyscapeClient.LootEventItem> items = new ArrayList<>();
+		for (Map.Entry<Integer, Integer> entry : quantities.entrySet())
+		{
+			items.add(new MyscapeClient.LootEventItem(entry.getKey(), resolveItemName(entry.getKey()), entry.getValue()));
+		}
+
+		Integer combatLevel = event.getCombatLevel() >= 0 ? event.getCombatLevel() : null;
+		MyscapeClient.LootEvent lootEvent = new MyscapeClient.LootEvent(
+			UUID.randomUUID().toString(),
+			event.getName(),
+			event.getType().name().toLowerCase(),
+			combatLevel,
+			Instant.now().toString(),
+			items
+		);
+		panel.syncLootInBackground(lootEvent);
 	}
 
 	// Set (on the client thread, from onVarbitChanged below) the moment

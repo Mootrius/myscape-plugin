@@ -74,6 +74,15 @@ class MyscapePanel extends PluginPanel
 	private Integer lastEquipmentItemCount;
 	private Integer lastPotionStorageItemCount;
 	private Integer lastRunePouchItemCount;
+	// Unlike the four counts above (the size of the most recent
+	// snapshot), this is a running total of how many *new* loot events
+	// this session has actually synced (see syncLootInBackground) --
+	// there's no "current size" for an append-only log the way there is
+	// for a container snapshot, so a cumulative count is the closest
+	// equivalent proof-of-life. Still reset in showLinked below, same
+	// as the other four, so it doesn't carry over a stale number from
+	// before the panel last showed "Linked".
+	private Integer lastLootEventCount;
 
 	MyscapePanel(MyscapeClient client, MyscapePlugin plugin)
 	{
@@ -275,6 +284,7 @@ class MyscapePanel extends PluginPanel
 		lastEquipmentItemCount = null;
 		lastPotionStorageItemCount = null;
 		lastRunePouchItemCount = null;
+		lastLootEventCount = null;
 		String name = runescapeName != null ? runescapeName : plugin.getRuneScapeName();
 		linkedNameLabel.setText("<html>Linked as <b>" + escape(name != null ? name : "your game account") + "</b></html>");
 		cards.show(cardPanel, CARD_LINKED);
@@ -395,6 +405,44 @@ class MyscapePanel extends PluginPanel
 		}
 	}
 
+	/** Called by the plugin (see MyscapePlugin#onLootReceived) the
+	 * moment a new loot event is captured -- unlike syncInBackground
+	 * above, this fires per-event immediately rather than going through
+	 * the shared debounce, since a loot event is a discrete thing that
+	 * already happened, not a "current state" that benefits from
+	 * collapsing a burst of changes into one send (see LootEvent's
+	 * docstring in the Mootrius/myscape repo's app/models.py). */
+	void syncLootInBackground(MyscapeClient.LootEvent event)
+	{
+		client.syncLootEvent(event, new MyscapeClient.SyncCallback()
+		{
+			@Override
+			public void onSuccess(int addedCount)
+			{
+				if (addedCount <= 0)
+				{
+					// Already on file -- a retried/duplicate send, not a
+					// new event (see LootEvent's docstring) -- nothing new
+					// to reflect in the status line.
+					return;
+				}
+				SwingUtilities.invokeLater(() -> {
+					lastLootEventCount = (lastLootEventCount == null ? 0 : lastLootEventCount) + addedCount;
+					updateSyncStatusLabel();
+				});
+			}
+
+			@Override
+			public void onFailure(String message)
+			{
+				// Ignored -- see syncCallback's method doc below; a
+				// dropped loot sync just means this one event never made
+				// it, and the next kill tries fresh rather than this
+				// needing any retry logic of its own.
+			}
+		});
+	}
+
 	/** Builds a SyncCallback that records its result into whichever of
 	 * the three lastXItemCount fields `recordCount` closes over, then
 	 * refreshes the combined status line -- shared by all three calls in
@@ -453,6 +501,10 @@ class MyscapePanel extends PluginPanel
 		if (lastRunePouchItemCount != null)
 		{
 			parts.add(lastRunePouchItemCount + " rune pouch");
+		}
+		if (lastLootEventCount != null)
+		{
+			parts.add(lastLootEventCount + " loot events");
 		}
 		if (parts.isEmpty())
 		{

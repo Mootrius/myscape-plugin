@@ -157,6 +157,57 @@ class MyscapeClient
 		}
 	}
 
+	/** One item from a single loot event (a kill, a clue casket, a
+	 * pickpocket) -- see LootEvent's docstring in the Mootrius/myscape
+	 * repo's app/models.py for the server side. Unlike BankItem and
+	 * friends above, this isn't part of a "current state" snapshot --
+	 * see LootEvent below, and MyscapePlugin#onLootReceived for how
+	 * this is actually built. */
+	static final class LootEventItem
+	{
+		final int itemId;
+		final String itemName;
+		final int quantity;
+
+		LootEventItem(int itemId, String itemName, int quantity)
+		{
+			this.itemId = itemId;
+			this.itemName = itemName;
+			this.quantity = quantity;
+		}
+	}
+
+	/** One kill/casket/pickpocket's worth of loot -- see LootEvent's
+	 * docstring in the Mootrius/myscape repo's app/models.py for the
+	 * full rationale (this is an append-only historical record, not a
+	 * snapshot the server deletes-and-replaces the way every other
+	 * synced source above is). eventId is generated once, the moment
+	 * the drop happens (see MyscapePlugin#onLootReceived), specifically
+	 * so a retried or duplicated sync of the same event is safe instead
+	 * of double-counted server-side. combatLevel is null for anything
+	 * without one (clue caskets, pickpocket targets) -- RuneLite's own
+	 * LootReceived event reports -1 in that case; see onLootReceived for
+	 * where that's translated to null. */
+	static final class LootEvent
+	{
+		final String eventId;
+		final String sourceName;
+		final String sourceType;
+		final Integer combatLevel;
+		final String occurredAt;
+		final List<LootEventItem> items;
+
+		LootEvent(String eventId, String sourceName, String sourceType, Integer combatLevel, String occurredAt, List<LootEventItem> items)
+		{
+			this.eventId = eventId;
+			this.sourceName = sourceName;
+			this.sourceType = sourceType;
+			this.combatLevel = combatLevel;
+			this.occurredAt = occurredAt;
+			this.items = items;
+		}
+	}
+
 	interface LinkCallback
 	{
 		void onSuccess(String runescapeName);
@@ -454,6 +505,92 @@ class MyscapeClient
 			itemsJson.add(itemJson);
 		}
 		syncItems("/api/players/me/rune-pouch", itemsJson, callback);
+	}
+
+	/** Sends one loot event to myscape.io (POST /api/players/me/loot --
+	 * see app/main.py in the Mootrius/myscape repo) the moment it
+	 * happens, rather than being folded into the shared debounced sync
+	 * the other five sync* methods above go through -- see LootEvent's
+	 * docstring in the Mootrius/myscape repo's app/models.py for why
+	 * this endpoint's request/response shape ({"events": [...]} in,
+	 * {"added_count": N} out) is different enough from syncItems' shared
+	 * {"items": [...]}/{"item_count": N} contract that it isn't reused
+	 * here. callback's int is added_count (0 if the server already had
+	 * this event on file -- a normal outcome on a retry, not a failure;
+	 * see MyscapePlugin#onLootReceived), not a running total. */
+	void syncLootEvent(LootEvent event, SyncCallback callback)
+	{
+		String apiKey = configManager.getConfiguration(MyscapeConfig.GROUP, MyscapeConfig.API_KEY_KEY);
+		if (apiKey == null || apiKey.isEmpty())
+		{
+			return;
+		}
+
+		JsonArray itemsJson = new JsonArray();
+		for (LootEventItem item : event.items)
+		{
+			JsonObject itemJson = new JsonObject();
+			itemJson.addProperty("item_id", item.itemId);
+			itemJson.addProperty("item_name", item.itemName);
+			itemJson.addProperty("quantity", item.quantity);
+			itemsJson.add(itemJson);
+		}
+		JsonObject eventJson = new JsonObject();
+		eventJson.addProperty("event_id", event.eventId);
+		eventJson.addProperty("source_name", event.sourceName);
+		eventJson.addProperty("source_type", event.sourceType);
+		if (event.combatLevel != null)
+		{
+			eventJson.addProperty("combat_level", event.combatLevel);
+		}
+		eventJson.addProperty("occurred_at", event.occurredAt);
+		eventJson.add("items", itemsJson);
+
+		JsonArray eventsJson = new JsonArray();
+		eventsJson.add(eventJson);
+		JsonObject body = new JsonObject();
+		body.add("events", eventsJson);
+
+		Request request = new Request.Builder()
+			.url(apiUrl("/api/players/me/loot"))
+			.header("Authorization", "Bearer " + apiKey)
+			.post(RequestBody.create(JSON, GSON.toJson(body)))
+			.build();
+
+		httpClient.newCall(request).enqueue(new Callback()
+		{
+			@Override
+			public void onFailure(Call call, IOException e)
+			{
+				callback.onFailure("Could not reach myscape.io. Check your connection and try again.");
+			}
+
+			@Override
+			public void onResponse(Call call, Response response)
+			{
+				try (Response r = response)
+				{
+					if (r.code() == 401)
+					{
+						clearStoredLink();
+						callback.onFailure("No longer linked to myscape.io.");
+						return;
+					}
+					String responseBody = r.body() != null ? r.body().string() : "";
+					if (!r.isSuccessful())
+					{
+						callback.onFailure(describeError(r.code(), responseBody));
+						return;
+					}
+					JsonObject json = GSON.fromJson(responseBody, JsonObject.class);
+					callback.onSuccess(json.get("added_count").getAsInt());
+				}
+				catch (Exception e)
+				{
+					callback.onFailure("Unexpected response from myscape.io.");
+				}
+			}
+		});
 	}
 
 	/** Shared by syncBank/syncInventory/syncEquipment/syncPotionStorage/syncRunePouch -- all five POST
