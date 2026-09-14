@@ -13,6 +13,7 @@ import java.util.concurrent.TimeUnit;
 import javax.inject.Inject;
 import net.runelite.api.Client;
 import net.runelite.api.EnumComposition;
+import net.runelite.api.EnumID;
 import net.runelite.api.EquipmentInventorySlot;
 import net.runelite.api.GameState;
 import net.runelite.api.Item;
@@ -22,6 +23,8 @@ import net.runelite.api.events.GameTick;
 import net.runelite.api.events.ItemContainerChanged;
 import net.runelite.api.events.VarbitChanged;
 import net.runelite.api.gameval.InventoryID;
+import net.runelite.api.gameval.ItemID;
+import net.runelite.api.gameval.VarbitID;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.game.ItemManager;
@@ -154,6 +157,41 @@ public class MyscapePlugin extends Plugin
 	private static final int POTION_STORAGE_VARP_MIN = 4272;
 	private static final int POTION_STORAGE_VARP_MAX = 4277;
 
+	// A Rune Pouch (regular or Divine, including their League/seasonal
+	// "Trouver parcel" cosmetic reclaims -- BH_RUNE_POUCH_TROUVER and
+	// DIVINE_RUNE_POUCH_TROUVER) is a single inventory item, not an
+	// ItemContainer -- RuneLite exposes what's actually stored inside
+	// one the same way it exposes Potion Storage above: not through a
+	// container-changed event, but through a fixed set of varbits (one
+	// pair -- "type" and "quantity" -- per pouch slot) read directly.
+	// This mirrors exactly how RuneLite's own bundled "Rune Pouch"
+	// overlay plugin reads the pouch it draws on top of (see
+	// net.runelite.client.plugins.runepouch.RunepouchOverlay, bundled
+	// with RuneLite itself) -- these are its actual named constants,
+	// not guessed. A regular Rune Pouch only ever fills 3 of these slots
+	// and a Divine Rune Pouch 4, but all 6 are read defensively so this
+	// never silently drops runes if Jagex ever ships a bigger pouch.
+	private static final int[] RUNE_POUCH_TYPE_VARBITS = {
+		VarbitID.RUNE_POUCH_TYPE_1, VarbitID.RUNE_POUCH_TYPE_2, VarbitID.RUNE_POUCH_TYPE_3,
+		VarbitID.RUNE_POUCH_TYPE_4, VarbitID.RUNE_POUCH_TYPE_5, VarbitID.RUNE_POUCH_TYPE_6,
+	};
+	private static final int[] RUNE_POUCH_QUANTITY_VARBITS = {
+		VarbitID.RUNE_POUCH_QUANTITY_1, VarbitID.RUNE_POUCH_QUANTITY_2, VarbitID.RUNE_POUCH_QUANTITY_3,
+		VarbitID.RUNE_POUCH_QUANTITY_4, VarbitID.RUNE_POUCH_QUANTITY_5, VarbitID.RUNE_POUCH_QUANTITY_6,
+	};
+	// Each "type" varbit above is a small 1-based index into this enum,
+	// not a real item id -- 0 means that slot is empty. getIntValue(type)
+	// resolves it to the actual rune item id, same as RunepouchOverlay.
+	private static final int RUNE_POUCH_RUNE_ENUM_ID = EnumID.RUNEPOUCH_RUNE;
+	// Which physical items are themselves a Rune Pouch -- used to check
+	// the player still actually owns one before trusting these varbits
+	// (unlike Potion Storage, which has no equivalent "do they still own
+	// the tab" question). See readRunePouchItems's doc for why this
+	// check exists.
+	private static final int[] RUNE_POUCH_ITEM_IDS = {
+		ItemID.BH_RUNE_POUCH, ItemID.BH_RUNE_POUCH_TROUVER, ItemID.DIVINE_RUNE_POUCH, ItemID.DIVINE_RUNE_POUCH_TROUVER,
+	};
+
 	private MyscapePanel panel;
 	private NavigationButton navButton;
 	private ScheduledFuture<?> linkStatusPollTask;
@@ -188,6 +226,10 @@ public class MyscapePlugin extends Plugin
 	// onVarbitChanged/onWidgetLoaded below), same as the bank only
 	// reporting contents once it's been opened.
 	private volatile List<MyscapeClient.PotionStorageItem> latestPotionStorageItems;
+	// Same deal, for a Rune Pouch's contents -- null until the relevant
+	// varbits have actually fired at least once this session, same as
+	// Potion Storage above.
+	private volatile List<MyscapeClient.RunePouchItem> latestRunePouchItems;
 
 	@Provides
 	MyscapeConfig provideConfig(ConfigManager configManager)
@@ -243,6 +285,7 @@ public class MyscapePlugin extends Plugin
 		latestInventoryItems = null;
 		latestEquipmentItems = null;
 		latestPotionStorageItems = null;
+		latestRunePouchItems = null;
 	}
 
 	/** Aggregates a container's raw slots by item id -- necessary (not
@@ -401,6 +444,91 @@ public class MyscapePlugin extends Plugin
 		return items;
 	}
 
+	/** Whether any of the Rune Pouch variants (see RUNE_POUCH_ITEM_IDS) is
+	 * currently sitting in the player's inventory -- see
+	 * readRunePouchItems's doc for why this gate exists. A pouch is
+	 * inventory-only (it can't be worn), so unlike other ownership
+	 * checks in this file, only the inventory container needs checking.
+	 * Must only ever be called from the client thread, same as
+	 * readRunePouchItems. */
+	private boolean playerOwnsRunePouch()
+	{
+		ItemContainer inventory = client.getItemContainer(InventoryID.INV);
+		if (inventory == null)
+		{
+			return false;
+		}
+		for (Item item : inventory.getItems())
+		{
+			for (int pouchId : RUNE_POUCH_ITEM_IDS)
+			{
+				if (item.getId() == pouchId)
+				{
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	/** Reads a Rune Pouch's current contents -- unlike
+	 * readBankItems/readInventoryItems/readEquipmentItems above, there's
+	 * no ItemContainer to read this off of; RuneLite exposes it through
+	 * six type/quantity varbit pairs instead (see the field doc on
+	 * RUNE_POUCH_TYPE_VARBITS above for the full mechanism this mirrors,
+	 * straight from RuneLite's own bundled Rune Pouch overlay plugin).
+	 * Must only ever be called from the client thread, same as the other
+	 * readXItems methods (both call sites below already guarantee that).
+	 *
+	 * Returns an empty list -- rather than whatever the varbits happen
+	 * to still say -- when the player doesn't currently have a Rune
+	 * Pouch anywhere in their inventory (see playerOwnsRunePouch):
+	 * unlike a bank or Potion Storage, these varbits are the pouch's own
+	 * carried state, so without this check, a pouch that was sold or
+	 * otherwise given up while stocked would keep being reported as
+	 * "owned" contents long after both it and the runes actually left
+	 * the account. Multiple slots holding the same rune type (not
+	 * possible in-game today, but nothing guarantees that) are merged
+	 * into one entry, same as aggregateQuantities does for bank/
+	 * inventory. */
+	private List<MyscapeClient.RunePouchItem> readRunePouchItems()
+	{
+		if (!playerOwnsRunePouch())
+		{
+			return Collections.emptyList();
+		}
+
+		EnumComposition runeEnum = client.getEnum(RUNE_POUCH_RUNE_ENUM_ID);
+		if (runeEnum == null)
+		{
+			return Collections.emptyList();
+		}
+
+		Map<Integer, Integer> quantities = new LinkedHashMap<>();
+		for (int slot = 0; slot < RUNE_POUCH_TYPE_VARBITS.length; slot++)
+		{
+			int runeType = client.getVarbitValue(RUNE_POUCH_TYPE_VARBITS[slot]);
+			int amount = client.getVarbitValue(RUNE_POUCH_QUANTITY_VARBITS[slot]);
+			if (runeType <= 0 || amount <= 0)
+			{
+				continue;
+			}
+			int itemId = runeEnum.getIntValue(runeType);
+			if (itemId <= 0)
+			{
+				continue;
+			}
+			quantities.merge(itemId, amount, Integer::sum);
+		}
+
+		List<MyscapeClient.RunePouchItem> items = new ArrayList<>();
+		for (Map.Entry<Integer, Integer> entry : quantities.entrySet())
+		{
+			items.add(new MyscapeClient.RunePouchItem(entry.getKey(), resolveItemName(entry.getKey()), entry.getValue()));
+		}
+		return items;
+	}
+
 	@Subscribe
 	public void onItemContainerChanged(ItemContainerChanged event)
 	{
@@ -418,6 +546,16 @@ public class MyscapePlugin extends Plugin
 		else if (containerId == InventoryID.INV)
 		{
 			latestInventoryItems = readInventoryItems(container);
+			// Whether a Rune Pouch is even in the inventory at all (not
+			// just what it contains) can change here too -- picking one
+			// up, dropping it, selling it, trading it away. That's not
+			// something a Rune Pouch varbit change would ever announce on
+			// its own (the varbits are the pouch's carried state, not its
+			// presence), so this is flagged dirty the same way a genuine
+			// varbit change is, and re-read defensively on the next tick
+			// (see playerOwnsRunePouch/readRunePouchItems) rather than
+			// only trusting onVarbitChanged below.
+			runePouchDirty = true;
 		}
 		else if (containerId == InventoryID.WORN)
 		{
@@ -442,15 +580,56 @@ public class MyscapePlugin extends Plugin
 	// so this needs no synchronization of its own.
 	private boolean potionStorageDirty;
 
+	// Same deal, for a Rune Pouch's contents -- also set directly from
+	// onItemContainerChanged above (see its comment) when the pouch's
+	// own presence in the inventory could have changed, not just when
+	// this listener below observes it.
+	private boolean runePouchDirty;
+
 	@Subscribe
 	public void onVarbitChanged(VarbitChanged event)
 	{
 		int varpId = event.getVarpId();
-		if (varpId < POTION_STORAGE_VARP_MIN || varpId > POTION_STORAGE_VARP_MAX)
+		if (varpId >= POTION_STORAGE_VARP_MIN && varpId <= POTION_STORAGE_VARP_MAX)
 		{
-			return;
+			potionStorageDirty = true;
 		}
-		potionStorageDirty = true;
+
+		int varbitId = event.getVarbitId();
+		if (isRunePouchVarbit(varbitId))
+		{
+			runePouchDirty = true;
+		}
+	}
+
+	/** Whether varbitId is one of the 12 Rune Pouch type/quantity slot
+	 * varbits (see RUNE_POUCH_TYPE_VARBITS/RUNE_POUCH_QUANTITY_VARBITS) --
+	 * checked by exact id, not a min/max range like Potion Storage's
+	 * varps above, since these 12 ids are individual varbits (cache-
+	 * assigned, not necessarily contiguous with each other or exclusive
+	 * of unrelated varbits in between) rather than a dedicated
+	 * contiguous varp block. */
+	private static boolean isRunePouchVarbit(int varbitId)
+	{
+		if (varbitId < 0)
+		{
+			return false;
+		}
+		for (int id : RUNE_POUCH_TYPE_VARBITS)
+		{
+			if (id == varbitId)
+			{
+				return true;
+			}
+		}
+		for (int id : RUNE_POUCH_QUANTITY_VARBITS)
+		{
+			if (id == varbitId)
+			{
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/** (Re)schedules the single shared debounce task -- shared across
@@ -474,7 +653,7 @@ public class MyscapePlugin extends Plugin
 			() -> {
 				if (panel != null)
 				{
-					panel.syncInBackground(latestBankItems, latestInventoryItems, latestEquipmentItems, latestPotionStorageItems);
+					panel.syncInBackground(latestBankItems, latestInventoryItems, latestEquipmentItems, latestPotionStorageItems, latestRunePouchItems);
 				}
 			},
 			SYNC_DEBOUNCE_SECONDS, TimeUnit.SECONDS);
@@ -523,6 +702,16 @@ public class MyscapePlugin extends Plugin
 				scheduleSyncDebounced();
 			}
 
+			// Same deal, for a Rune Pouch (see runePouchDirty's field doc
+			// for why this gets set, and readRunePouchItems for why it's
+			// re-read in full here rather than incrementally).
+			if (runePouchDirty)
+			{
+				runePouchDirty = false;
+				latestRunePouchItems = readRunePouchItems();
+				scheduleSyncDebounced();
+			}
+
 			// onGameStateChanged (below) fires the instant the game
 			// state flips to LOGGED_IN, but getAccountHash() isn't
 			// populated until this tick handler runs afterward -- so
@@ -561,6 +750,13 @@ public class MyscapePlugin extends Plugin
 				{
 					latestEquipmentItems = readEquipmentItems(equipment);
 				}
+				// Same reasoning as inventory/equipment just above: a Rune
+				// Pouch stocked before this plugin ever loaded (or before
+				// this login) has no "change" event left to fire for
+				// state that was already set, so it's captured here too
+				// rather than only ever reacting to onVarbitChanged/
+				// onItemContainerChanged from this point forward.
+				latestRunePouchItems = readRunePouchItems();
 				scheduleSyncDebounced();
 			}
 		}

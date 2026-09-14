@@ -129,6 +129,34 @@ class MyscapeClient
 		}
 	}
 
+	/** Same shape as BankItem/InventoryItem again, for a Rune Pouch's
+	 * contents -- see RunePouchItem in the Mootrius/myscape repo's
+	 * app/models.py for the server side, and
+	 * MyscapePlugin#readRunePouchItems for how this is actually built
+	 * (a Rune Pouch is a single inventory item whose contents RuneLite
+	 * only exposes through varbits/an enum, not an ItemContainer, so --
+	 * same as Potion Storage -- it can't just be read the way
+	 * bank/inventory/equipment are). Deliberately synced through its own
+	 * endpoint rather than folded into InventoryItem's payload: the
+	 * pouch itself is one inventory slot, but its contents can add up to
+	 * several more distinct item entries, and /inventory's sync caps the
+	 * number of distinct entries per request -- routing those through a
+	 * separate endpoint (mirroring Potion Storage) avoids a stocked
+	 * pouch ever pushing an otherwise-normal inventory over that cap. */
+	static final class RunePouchItem
+	{
+		final int itemId;
+		final String itemName;
+		final int quantity;
+
+		RunePouchItem(int itemId, String itemName, int quantity)
+		{
+			this.itemId = itemId;
+			this.itemName = itemName;
+			this.quantity = quantity;
+		}
+	}
+
 	interface LinkCallback
 	{
 		void onSuccess(String runescapeName);
@@ -412,7 +440,23 @@ class MyscapeClient
 		syncItems("/api/players/me/potion-storage", itemsJson, callback);
 	}
 
-	/** Shared by syncBank/syncInventory/syncEquipment/syncPotionStorage -- all four POST
+	/** Same deal as syncBank, for a Rune Pouch's contents (POST
+	 * /api/players/me/rune-pouch). */
+	void syncRunePouch(List<RunePouchItem> items, SyncCallback callback)
+	{
+		JsonArray itemsJson = new JsonArray();
+		for (RunePouchItem item : items)
+		{
+			JsonObject itemJson = new JsonObject();
+			itemJson.addProperty("item_id", item.itemId);
+			itemJson.addProperty("item_name", item.itemName);
+			itemJson.addProperty("quantity", item.quantity);
+			itemsJson.add(itemJson);
+		}
+		syncItems("/api/players/me/rune-pouch", itemsJson, callback);
+	}
+
+	/** Shared by syncBank/syncInventory/syncEquipment/syncPotionStorage/syncRunePouch -- all five POST
 	 * an {"items": [...]} body to their own path and get back the same
 	 * {"item_count": N} response.
 	 *

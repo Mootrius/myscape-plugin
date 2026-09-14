@@ -73,6 +73,7 @@ class MyscapePanel extends PluginPanel
 	private Integer lastInventoryItemCount;
 	private Integer lastEquipmentItemCount;
 	private Integer lastPotionStorageItemCount;
+	private Integer lastRunePouchItemCount;
 
 	MyscapePanel(MyscapeClient client, MyscapePlugin plugin)
 	{
@@ -273,6 +274,7 @@ class MyscapePanel extends PluginPanel
 		lastInventoryItemCount = null;
 		lastEquipmentItemCount = null;
 		lastPotionStorageItemCount = null;
+		lastRunePouchItemCount = null;
 		String name = runescapeName != null ? runescapeName : plugin.getRuneScapeName();
 		linkedNameLabel.setText("<html>Linked as <b>" + escape(name != null ? name : "your game account") + "</b></html>");
 		cards.show(cardPanel, CARD_LINKED);
@@ -368,7 +370,8 @@ class MyscapePanel extends PluginPanel
 		List<MyscapeClient.BankItem> bankItems,
 		List<MyscapeClient.InventoryItem> inventoryItems,
 		List<MyscapeClient.EquipmentItem> equipmentItems,
-		List<MyscapeClient.PotionStorageItem> potionStorageItems)
+		List<MyscapeClient.PotionStorageItem> potionStorageItems,
+		List<MyscapeClient.RunePouchItem> runePouchItems)
 	{
 		if (bankItems != null)
 		{
@@ -385,6 +388,10 @@ class MyscapePanel extends PluginPanel
 		if (potionStorageItems != null)
 		{
 			client.syncPotionStorage(potionStorageItems, syncCallback(count -> lastPotionStorageItemCount = count));
+		}
+		if (runePouchItems != null)
+		{
+			client.syncRunePouch(runePouchItems, syncCallback(count -> lastRunePouchItemCount = count));
 		}
 	}
 
@@ -442,6 +449,10 @@ class MyscapePanel extends PluginPanel
 		if (lastPotionStorageItemCount != null)
 		{
 			parts.add(lastPotionStorageItemCount + " potions");
+		}
+		if (lastRunePouchItemCount != null)
+		{
+			parts.add(lastRunePouchItemCount + " rune pouch");
 		}
 		if (parts.isEmpty())
 		{
