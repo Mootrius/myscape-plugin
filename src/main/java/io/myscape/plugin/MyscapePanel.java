@@ -72,6 +72,7 @@ class MyscapePanel extends PluginPanel
 	private Integer lastBankItemCount;
 	private Integer lastInventoryItemCount;
 	private Integer lastEquipmentItemCount;
+	private Integer lastPotionStorageItemCount;
 
 	MyscapePanel(MyscapeClient client, MyscapePlugin plugin)
 	{
@@ -271,6 +272,7 @@ class MyscapePanel extends PluginPanel
 		lastBankItemCount = null;
 		lastInventoryItemCount = null;
 		lastEquipmentItemCount = null;
+		lastPotionStorageItemCount = null;
 		String name = runescapeName != null ? runescapeName : plugin.getRuneScapeName();
 		linkedNameLabel.setText("<html>Linked as <b>" + escape(name != null ? name : "your game account") + "</b></html>");
 		cards.show(cardPanel, CARD_LINKED);
@@ -349,22 +351,24 @@ class MyscapePanel extends PluginPanel
 	}
 
 	/** Called by the plugin (see MyscapePlugin#scheduleSyncDebounced),
-	 * off the EDT, once bank/inventory/equipment have settled after a
-	 * change -- syncs whichever of the three have actually been observed
-	 * this session (any of the three arguments may be null; see the
-	 * field docs on MyscapePlugin's latest*Items fields) and, on each
-	 * success, updates the small status line on the linked card so
-	 * there's some visible confirmation this is actually working, the
-	 * same way linking and unlinking already give feedback. A failure is
-	 * shown the same quiet way the background link-status poll handles
-	 * one (see MyscapePanel#recheckLinkStatusInBackground) -- this runs
+	 * off the EDT, once bank/inventory/equipment/potion storage have
+	 * settled after a change -- syncs whichever of the four have
+	 * actually been observed this session (any of the four arguments
+	 * may be null; see the field docs on MyscapePlugin's latest*Items
+	 * fields) and, on each success, updates the small status line on
+	 * the linked card so there's some visible confirmation this is
+	 * actually working, the same way linking and unlinking already give
+	 * feedback. A failure is shown the same quiet way the background
+	 * link-status poll handles one (see
+	 * MyscapePanel#recheckLinkStatusInBackground) -- this runs
 	 * unprompted in the background, not from a button click, so it
 	 * shouldn't interrupt the player the way a failed explicit action
 	 * would; the next change just tries again. */
 	void syncInBackground(
 		List<MyscapeClient.BankItem> bankItems,
 		List<MyscapeClient.InventoryItem> inventoryItems,
-		List<MyscapeClient.EquipmentItem> equipmentItems)
+		List<MyscapeClient.EquipmentItem> equipmentItems,
+		List<MyscapeClient.PotionStorageItem> potionStorageItems)
 	{
 		if (bankItems != null)
 		{
@@ -377,6 +381,10 @@ class MyscapePanel extends PluginPanel
 		if (equipmentItems != null)
 		{
 			client.syncEquipment(equipmentItems, syncCallback(count -> lastEquipmentItemCount = count));
+		}
+		if (potionStorageItems != null)
+		{
+			client.syncPotionStorage(potionStorageItems, syncCallback(count -> lastPotionStorageItemCount = count));
 		}
 	}
 
@@ -407,7 +415,7 @@ class MyscapePanel extends PluginPanel
 	}
 
 	/** Rebuilds the combined status line from whichever of
-	 * bank/inventory/equipment have synced at least once since the panel
+	 * bank/inventory/equipment/potion storage have synced at least once since the panel
 	 * last showed "Linked" -- called after each individual sync
 	 * completes, so the line only ever grows more complete rather than
 	 * flickering between single-container messages (see the field doc
@@ -430,6 +438,10 @@ class MyscapePanel extends PluginPanel
 		if (lastEquipmentItemCount != null)
 		{
 			parts.add(lastEquipmentItemCount + " equipment");
+		}
+		if (lastPotionStorageItemCount != null)
+		{
+			parts.add(lastPotionStorageItemCount + " potions");
 		}
 		if (parts.isEmpty())
 		{

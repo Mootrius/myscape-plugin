@@ -12,6 +12,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import javax.inject.Inject;
 import net.runelite.api.Client;
+import net.runelite.api.EnumComposition;
 import net.runelite.api.EquipmentInventorySlot;
 import net.runelite.api.GameState;
 import net.runelite.api.Item;
@@ -19,6 +20,7 @@ import net.runelite.api.ItemContainer;
 import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.events.ItemContainerChanged;
+import net.runelite.api.events.VarbitChanged;
 import net.runelite.api.gameval.InventoryID;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
@@ -37,10 +39,10 @@ import okhttp3.OkHttpClient;
  * generates a short-lived code on the website and pastes it into this
  * plugin's side panel, which exchanges it for a long-lived API key),
  * and, once linked, keeps the website's copy of the player's bank,
- * inventory, and worn equipment in sync -- the data collection the
- * Purchase Goals feature is built on (see onItemContainerChanged and
- * onGameTick below). Loot Tracker data collection builds on top of the
- * same link later.
+ * inventory, worn equipment, and Potion Storage in sync -- the data
+ * collection the Purchase Goals feature is built on (see
+ * onItemContainerChanged, onGameTick, and onVarbitChanged below). Loot
+ * Tracker data collection builds on top of the same link later.
  */
 @PluginDescriptor(
 	name = "myscape",
@@ -123,6 +125,35 @@ public class MyscapePlugin extends Plugin
 		return Collections.unmodifiableMap(slots);
 	}
 
+	// Player-Owned-House Potion Storage isn't an ItemContainer the way
+	// bank/inventory/equipment are -- RuneLite (and the client itself)
+	// expose it through the same enum/script plumbing the built-in Bank
+	// Tags plugin's own Potion Storage tab uses (see
+	// net.runelite.client.plugins.banktags.tabs.PotionStorage, bundled
+	// with RuneLite itself): two top-level enums whose values are each
+	// one potion type's own enum id, and a client script that returns
+	// how many total *doses* of that potion type are currently stored
+	// (not a count of physical items -- Potion Storage tracks doses the
+	// way a bank note tracks value, so 10 stored doses of Prayer potion
+	// might have come from any mix of partially- and fully-doses
+	// potions ever deposited). These ids are read directly off
+	// RuneLite's actual shipped bytecode for that plugin, not guessed.
+	private static final int[] POTION_STORAGE_ENUM_IDS = {4826, 4829};
+	private static final int POTION_STORAGE_TOTAL_DOSES_SCRIPT_ID = 3750;
+	// A potion's per-type enum carries the real item id for each dose
+	// count from 1 to 4 (getIntValue(1)..getIntValue(4)) -- index 0 is
+	// something else entirely (not a dose variant) and is never used
+	// here. 4 is also the largest dose any potion in Potion Storage
+	// actually goes up to.
+	private static final int MAX_POTION_DOSES = 4;
+	// The specific varp ids the Bank Tags plugin's own Potion Storage
+	// tab treats as "something in Potion Storage changed, re-read it" --
+	// used here as the trigger to recompute+resync this plugin's own
+	// snapshot, the same way a bank/inventory/equipment
+	// ItemContainerChanged event triggers a resync for those.
+	private static final int POTION_STORAGE_VARP_MIN = 4272;
+	private static final int POTION_STORAGE_VARP_MAX = 4277;
+
 	private MyscapePanel panel;
 	private NavigationButton navButton;
 	private ScheduledFuture<?> linkStatusPollTask;
@@ -152,6 +183,11 @@ public class MyscapePlugin extends Plugin
 	private volatile List<MyscapeClient.BankItem> latestBankItems;
 	private volatile List<MyscapeClient.InventoryItem> latestInventoryItems;
 	private volatile List<MyscapeClient.EquipmentItem> latestEquipmentItems;
+	// Same deal, for Potion Storage -- null until the relevant varps
+	// have actually fired at least once this session (see
+	// onVarbitChanged/onWidgetLoaded below), same as the bank only
+	// reporting contents once it's been opened.
+	private volatile List<MyscapeClient.PotionStorageItem> latestPotionStorageItems;
 
 	@Provides
 	MyscapeConfig provideConfig(ConfigManager configManager)
@@ -206,6 +242,7 @@ public class MyscapePlugin extends Plugin
 		latestBankItems = null;
 		latestInventoryItems = null;
 		latestEquipmentItems = null;
+		latestPotionStorageItems = null;
 	}
 
 	/** Aggregates a container's raw slots by item id -- necessary (not
@@ -298,6 +335,72 @@ public class MyscapePlugin extends Plugin
 		return items;
 	}
 
+	/** Reads Potion Storage's current contents -- unlike
+	 * readBankItems/readInventoryItems/readEquipmentItems above, there's
+	 * no ItemContainer to read this off of; Potion Storage tracks total
+	 * *doses* per potion type, not discrete item stacks (see the field
+	 * doc on POTION_STORAGE_ENUM_IDS above for the full mechanism this
+	 * mirrors, straight from RuneLite's own bundled Bank Tags plugin).
+	 * Must only ever be called from the client thread, same as the
+	 * other readXItems methods (both call sites below already
+	 * guarantee that).
+	 *
+	 * Reports each potion type as however many physical items totalling
+	 * that many doses withdrawing it "all at once" would actually hand
+	 * back -- e.g. 10 stored doses of Prayer potion becomes two
+	 * Prayer potion(4) plus one Prayer potion(2) -- rather than the raw
+	 * dose count itself, so the result slots into the exact same
+	 * item-id/quantity shape bank/inventory/equipment already use, and
+	 * the server needs zero special-casing to treat it as just another
+	 * owned-item source (see PotionStorageItem's docstring in the
+	 * Mootrius/myscape repo's app/models.py). */
+	private List<MyscapeClient.PotionStorageItem> readPotionStorageItems()
+	{
+		List<MyscapeClient.PotionStorageItem> items = new ArrayList<>();
+		for (int topEnumId : POTION_STORAGE_ENUM_IDS)
+		{
+			EnumComposition topEnum = client.getEnum(topEnumId);
+			if (topEnum == null)
+			{
+				continue;
+			}
+			for (int potionEnumId : topEnum.getIntVals())
+			{
+				EnumComposition potionEnum = client.getEnum(potionEnumId);
+				if (potionEnum == null)
+				{
+					continue;
+				}
+
+				client.runScript(POTION_STORAGE_TOTAL_DOSES_SCRIPT_ID, potionEnumId);
+				int[] stack = client.getIntStack();
+				int totalDoses = stack.length > 0 ? stack[0] : 0;
+				if (totalDoses <= 0)
+				{
+					continue;
+				}
+
+				int remaining = totalDoses;
+				for (int dose = MAX_POTION_DOSES; dose >= 1 && remaining > 0; dose--)
+				{
+					int itemId = potionEnum.getIntValue(dose);
+					if (itemId <= 0)
+					{
+						continue;
+					}
+					int count = remaining / dose;
+					if (count <= 0)
+					{
+						continue;
+					}
+					items.add(new MyscapeClient.PotionStorageItem(itemId, resolveItemName(itemId), count));
+					remaining -= count * dose;
+				}
+			}
+		}
+		return items;
+	}
+
 	@Subscribe
 	public void onItemContainerChanged(ItemContainerChanged event)
 	{
@@ -328,17 +431,39 @@ public class MyscapePlugin extends Plugin
 		scheduleSyncDebounced();
 	}
 
+	// Set (on the client thread, from onVarbitChanged below) the moment
+	// one of Potion Storage's own varps fires, and consumed on the next
+	// onGameTick rather than acted on immediately -- deferring by one
+	// tick mirrors how RuneLite's own bundled Bank Tags plugin handles
+	// the exact same varps (it defers to the next client tick before
+	// rebuilding), rather than assuming it's safe to read Potion
+	// Storage's backing script state mid-event. Both the write (here)
+	// and the read (onGameTick) only ever happen on the client thread,
+	// so this needs no synchronization of its own.
+	private boolean potionStorageDirty;
+
+	@Subscribe
+	public void onVarbitChanged(VarbitChanged event)
+	{
+		int varpId = event.getVarpId();
+		if (varpId < POTION_STORAGE_VARP_MIN || varpId > POTION_STORAGE_VARP_MAX)
+		{
+			return;
+		}
+		potionStorageDirty = true;
+	}
+
 	/** (Re)schedules the single shared debounce task -- shared across
-	 * bank/inventory/equipment rather than one per container, since a
-	 * player actively shopping typically touches more than one of them
-	 * in the same burst (withdrawing from the bank, then equipping what
-	 * they withdrew), and there's no reason to send three separate
-	 * requests a couple of ticks apart for what's really one action.
-	 * When it fires, it syncs whichever of the three have actually been
-	 * observed at least once (see the field docs above) -- reading only
-	 * the already-captured volatile snapshots, never the RuneLite Client
-	 * itself, since this runs on `executor`'s thread, not the client
-	 * thread. */
+	 * bank/inventory/equipment/potion storage rather than one per
+	 * container, since a player actively shopping typically touches
+	 * more than one of them in the same burst (withdrawing from the
+	 * bank, then equipping what they withdrew), and there's no reason
+	 * to send four separate requests a couple of ticks apart for what's
+	 * really one action. When it fires, it syncs whichever of the four
+	 * have actually been observed at least once (see the field docs
+	 * above) -- reading only the already-captured volatile snapshots,
+	 * never the RuneLite Client itself, since this runs on `executor`'s
+	 * thread, not the client thread. */
 	private void scheduleSyncDebounced()
 	{
 		if (syncDebounceTask != null)
@@ -349,7 +474,7 @@ public class MyscapePlugin extends Plugin
 			() -> {
 				if (panel != null)
 				{
-					panel.syncInBackground(latestBankItems, latestInventoryItems, latestEquipmentItems);
+					panel.syncInBackground(latestBankItems, latestInventoryItems, latestEquipmentItems, latestPotionStorageItems);
 				}
 			},
 			SYNC_DEBOUNCE_SECONDS, TimeUnit.SECONDS);
@@ -384,6 +509,18 @@ public class MyscapePlugin extends Plugin
 			if (client.getLocalPlayer() != null)
 			{
 				currentRuneScapeName = client.getLocalPlayer().getName();
+			}
+
+			// Potion Storage's own varps fired since the last tick (see
+			// onVarbitChanged above) -- read its current contents now,
+			// on the client thread, one tick later rather than inline in
+			// that event handler (see potionStorageDirty's field doc for
+			// why the deferral).
+			if (potionStorageDirty)
+			{
+				potionStorageDirty = false;
+				latestPotionStorageItems = readPotionStorageItems();
+				scheduleSyncDebounced();
 			}
 
 			// onGameStateChanged (below) fires the instant the game

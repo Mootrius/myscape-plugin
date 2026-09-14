@@ -17,7 +17,7 @@ import okhttp3.Response;
 /**
  * Talks to myscape.io's account-linking and item-sync endpoints -- POST
  * /api/link/exchange, GET /api/players/me, and POST
- * /api/players/me/{bank,inventory,equipment} (see app/routers/linking.py
+ * /api/players/me/{bank,inventory,equipment,potion-storage} (see app/routers/linking.py
  * and app/main.py in the Mootrius/myscape repo for the server side of
  * this contract). Everything here is async (OkHttp's enqueue/Callback):
  * every caller is a Swing button handler, plugin startup, or a
@@ -104,6 +104,31 @@ class MyscapeClient
 		}
 	}
 
+	/** Same shape as BankItem/InventoryItem again, for the
+	 * Player-Owned-House Potion Storage -- see PotionStorageItem in the
+	 * Mootrius/myscape repo's app/models.py for the server side, and
+	 * MyscapePlugin#readPotionStorageItems for how this is actually
+	 * built (Potion Storage isn't an ItemContainer, so it can't just be
+	 * read the way bank/inventory/equipment are -- it's decomposed from
+	 * each stored potion's total dose count into the same real item ids
+	 * withdrawing it would hand back). This is what replaced the old
+	 * "supplies" gear-slot flag -- a potion sitting in storage can now
+	 * be recognized as genuinely owned instead of needing to be marked
+	 * always-owned by hand. */
+	static final class PotionStorageItem
+	{
+		final int itemId;
+		final String itemName;
+		final int quantity;
+
+		PotionStorageItem(int itemId, String itemName, int quantity)
+		{
+			this.itemId = itemId;
+			this.itemName = itemName;
+			this.quantity = quantity;
+		}
+	}
+
 	interface LinkCallback
 	{
 		void onSuccess(String runescapeName);
@@ -123,10 +148,10 @@ class MyscapeClient
 		void onFailure(String message);
 	}
 
-	/** Shared by every item-sync method (bank/inventory/equipment) -- all
-	 * three POST an {"items": [...]} body and get back the same
-	 * {"item_count": N} shape, so one callback interface covers all of
-	 * them rather than three identical ones. */
+	/** Shared by every item-sync method (bank/inventory/equipment/potion
+	 * storage) -- all four POST an {"items": [...]} body and get back
+	 * the same {"item_count": N} shape, so one callback interface covers
+	 * all of them rather than four identical ones. */
 	interface SyncCallback
 	{
 		void onSuccess(int itemCount);
@@ -371,7 +396,23 @@ class MyscapeClient
 		syncItems("/api/players/me/equipment", itemsJson, callback);
 	}
 
-	/** Shared by syncBank/syncInventory/syncEquipment -- all three POST
+	/** Same deal as syncBank, for Potion Storage (POST
+	 * /api/players/me/potion-storage). */
+	void syncPotionStorage(List<PotionStorageItem> items, SyncCallback callback)
+	{
+		JsonArray itemsJson = new JsonArray();
+		for (PotionStorageItem item : items)
+		{
+			JsonObject itemJson = new JsonObject();
+			itemJson.addProperty("item_id", item.itemId);
+			itemJson.addProperty("item_name", item.itemName);
+			itemJson.addProperty("quantity", item.quantity);
+			itemsJson.add(itemJson);
+		}
+		syncItems("/api/players/me/potion-storage", itemsJson, callback);
+	}
+
+	/** Shared by syncBank/syncInventory/syncEquipment/syncPotionStorage -- all four POST
 	 * an {"items": [...]} body to their own path and get back the same
 	 * {"item_count": N} response.
 	 *
