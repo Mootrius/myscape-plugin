@@ -655,13 +655,19 @@ class MyscapePanel extends PluginPanel
 	}
 
 	/** Redraws one Status section row from storageSynced's current view
-	 * of that key -- a filled dot + "Synced" in the site's own
-	 * completed-progress green once storageSynced.get(key) is true, an
-	 * empty dot + "Not synced yet" in a neutral gray once it's known
-	 * false (nothing alarming about that -- plenty of these, Seed Vault
-	 * especially right now, simply haven't been wired up to sync at all
-	 * yet), or "Checking..." for as long as it's still null (never
-	 * fetched this "Linked" session -- see showLinked). */
+	 * of that key -- the storage's name in the panel's normal text
+	 * color, followed by "Synced" in the site's own completed-progress
+	 * green once storageSynced.get(key) is true, "Not synced yet" in a
+	 * neutral gray once it's known false (nothing alarming about that --
+	 * plenty of these, Seed Vault especially right now, simply haven't
+	 * been wired up to sync at all yet), or "Checking..." for as long as
+	 * it's still null (never fetched this "Linked" session -- see
+	 * showLinked). Deliberately plain text with no dot/bullet glyph in
+	 * front of it -- an earlier version used a Unicode circle character
+	 * for that, which showed up as a "tofu box" (garbled placeholder
+	 * glyph) for at least one player because RuneLite's own bundled
+	 * sidebar font doesn't cover it; color alone carries the same
+	 * information without depending on font glyph coverage at all. */
 	private void renderStatusRow(String key)
 	{
 		JLabel row = statusRowLabels.get(key);
@@ -673,19 +679,19 @@ class MyscapePanel extends PluginPanel
 		Boolean synced = storageSynced.get(key);
 		if (synced == null)
 		{
-			row.setText("<html><span style='color:" + toHex(ColorScheme.MEDIUM_GRAY_COLOR) + ";'>&#9675;</span> "
-				+ escape(label) + " &ndash; <i>Checking...</i></html>");
+			row.setText("<html>" + escape(label) + ": <span style='color:" + toHex(ColorScheme.MEDIUM_GRAY_COLOR)
+				+ ";'><i>Checking...</i></span></html>");
 			return;
 		}
 		if (synced)
 		{
-			row.setText("<html><span style='color:" + toHex(ColorScheme.PROGRESS_COMPLETE_COLOR) + ";'>&#9679;</span> "
-				+ escape(label) + " &ndash; Synced</html>");
+			row.setText("<html>" + escape(label) + ": <span style='color:" + toHex(ColorScheme.PROGRESS_COMPLETE_COLOR)
+				+ ";'>Synced</span></html>");
 		}
 		else
 		{
-			row.setText("<html><span style='color:" + toHex(ColorScheme.MEDIUM_GRAY_COLOR) + ";'>&#9675;</span> "
-				+ escape(label) + " &ndash; Not synced yet</html>");
+			row.setText("<html>" + escape(label) + ": <span style='color:" + toHex(ColorScheme.MEDIUM_GRAY_COLOR)
+				+ ";'>Not synced yet</span></html>");
 		}
 	}
 
