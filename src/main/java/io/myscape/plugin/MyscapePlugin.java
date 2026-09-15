@@ -582,20 +582,34 @@ public class MyscapePlugin extends Plugin
 	}
 
 	/** Whether any of the Rune Pouch variants (see RUNE_POUCH_ITEM_IDS) is
-	 * currently sitting in the player's inventory -- see
-	 * readRunePouchItems's doc for why this gate exists. A pouch is
-	 * inventory-only (it can't be worn), so unlike other ownership
-	 * checks in this file, only the inventory container needs checking.
-	 * Must only ever be called from the client thread, same as
-	 * readRunePouchItems. */
+	 * currently sitting in the player's inventory OR bank -- see
+	 * readRunePouchItems's doc for why this gate exists. A pouch can't be
+	 * worn, but it CAN be banked (this used not to be true in OSRS, but
+	 * is again as of the update that let players store one in the bank),
+	 * and its contents are account-wide varbit state, not something that
+	 * stops being real just because the physical pouch is sitting in the
+	 * bank rather than the inventory -- checking inventory alone meant a
+	 * banked pouch's runes silently vanished from every synced snapshot
+	 * even though the player still owns them, exactly as much as the
+	 * rest of what's in their bank. The bank container is null until the
+	 * player has opened it at least once this session (same caveat as
+	 * everywhere else in this file that reads it) -- until then, a
+	 * banked pouch simply isn't detectable yet, same as the rest of the
+	 * bank's own contents. Must only ever be called from the client
+	 * thread, same as readRunePouchItems. */
 	private boolean playerOwnsRunePouch()
 	{
-		ItemContainer inventory = client.getItemContainer(InventoryID.INV);
-		if (inventory == null)
+		return containerHasRunePouch(client.getItemContainer(InventoryID.INV))
+			|| containerHasRunePouch(client.getItemContainer(InventoryID.BANK));
+	}
+
+	private static boolean containerHasRunePouch(ItemContainer container)
+	{
+		if (container == null)
 		{
 			return false;
 		}
-		for (Item item : inventory.getItems())
+		for (Item item : container.getItems())
 		{
 			for (int pouchId : RUNE_POUCH_ITEM_IDS)
 			{
@@ -619,9 +633,9 @@ public class MyscapePlugin extends Plugin
 	 *
 	 * Returns an empty list -- rather than whatever the varbits happen
 	 * to still say -- when the player doesn't currently have a Rune
-	 * Pouch anywhere in their inventory (see playerOwnsRunePouch):
-	 * unlike a bank or Potion Storage, these varbits are the pouch's own
-	 * carried state, so without this check, a pouch that was sold or
+	 * Pouch anywhere in their inventory or bank (see
+	 * playerOwnsRunePouch): unlike Potion Storage, these varbits are the
+	 * pouch's own carried state, so without this check, a pouch that was sold or
 	 * otherwise given up while stocked would keep being reported as
 	 * "owned" contents long after both it and the runes actually left
 	 * the account. Multiple slots holding the same rune type (not
@@ -766,6 +780,11 @@ public class MyscapePlugin extends Plugin
 		if (containerId == InventoryID.BANK)
 		{
 			latestBankItems = readBankItems(container);
+			// Whether a Rune Pouch is sitting in the BANK at all can
+			// change here too (depositing/withdrawing it) -- same
+			// reasoning as the INV branch just below, now that a pouch
+			// can be banked (see playerOwnsRunePouch's own comment).
+			runePouchDirty = true;
 		}
 		else if (containerId == InventoryID.INV)
 		{
