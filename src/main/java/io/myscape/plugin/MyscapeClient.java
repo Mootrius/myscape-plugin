@@ -157,6 +157,51 @@ class MyscapeClient
 		}
 	}
 
+	/** One skill's current level+xp -- see Player.skills' docstring in
+	 * the Mootrius/myscape repo's app/models.py for the server side, and
+	 * MyscapePlugin#readSkills for how this is actually built. `skill`
+	 * is always the lowercase RuneLite enum name (e.g. "attack",
+	 * "sailing"), matching SKILL_NAMES in app/mindmaps.py exactly since
+	 * both sides ultimately derive from the same 24-entry set of real
+	 * OSRS skills -- see readSkills' own comment for why this plugin
+	 * never has to hardcode that list itself. `level` is the player's
+	 * REAL (unboosted) level, not whatever a potion currently has it
+	 * boosted to -- a boost is transient and shouldn't make a goal
+	 * flicker complete and then incomplete again a few minutes later. */
+	static final class SkillItem
+	{
+		final String skill;
+		final int level;
+		final int xp;
+
+		SkillItem(String skill, int level, int xp)
+		{
+			this.skill = skill;
+			this.level = level;
+			this.xp = xp;
+		}
+	}
+
+	/** One achievement diary area's highest completed tier -- see
+	 * Player.diary_tiers' docstring in the Mootrius/myscape repo's
+	 * app/models.py for the server side, and
+	 * MyscapePlugin#readDiaryTiers for how this is actually built. Only
+	 * ever sent for an area with at least Easy complete -- an area
+	 * with nothing done yet is simply left out of the list, the same
+	 * way the server itself only ever stores one current tier per area
+	 * (see that same docstring). */
+	static final class DiaryTierItem
+	{
+		final String area;
+		final String tier;
+
+		DiaryTierItem(String area, String tier)
+		{
+			this.area = area;
+			this.tier = tier;
+		}
+	}
+
 	/** One item from a single loot event (a kill, a clue casket, a
 	 * pickpocket) -- see LootEvent's docstring in the Mootrius/myscape
 	 * repo's app/models.py for the server side. Unlike BankItem and
@@ -507,6 +552,70 @@ class MyscapeClient
 		syncItems("/api/players/me/rune-pouch", itemsJson, callback);
 	}
 
+	/** Sends the player's current level+xp in every skill the plugin has
+	 * read at least once this session (POST /api/players/me/skills --
+	 * see app/main.py in the Mootrius/myscape repo). Always a full
+	 * replace server-side, same as syncBank and friends above -- but
+	 * unlike those, this is never a *partial* snapshot in practice
+	 * either, since MyscapePlugin reads every one of Skill.values() in
+	 * one pass (see readSkills), not just whichever skill just changed. */
+	void syncSkills(List<SkillItem> skills, SyncCallback callback)
+	{
+		JsonArray skillsJson = new JsonArray();
+		for (SkillItem skill : skills)
+		{
+			JsonObject skillJson = new JsonObject();
+			skillJson.addProperty("skill", skill.skill);
+			skillJson.addProperty("level", skill.level);
+			skillJson.addProperty("xp", skill.xp);
+			skillsJson.add(skillJson);
+		}
+		JsonObject body = new JsonObject();
+		body.add("skills", skillsJson);
+		syncPayload("/api/players/me/skills", body, "skill_count", callback);
+	}
+
+	/** Sends the player's full completed quest/miniquest list (POST
+	 * /api/players/me/quests -- see app/main.py in the Mootrius/myscape
+	 * repo) -- every net.runelite.api.Quest this client thread has seen
+	 * report QuestState.FINISHED (see MyscapePlugin#readCompletedQuests),
+	 * by name, exactly as RuneLite itself names it; matched
+	 * case-insensitively against a blue goal node's chosen quest
+	 * server-side, so this doesn't need to normalize anything itself.
+	 * Always a full replace, like every other current-state sync here. */
+	void syncQuests(List<String> completedQuestNames, SyncCallback callback)
+	{
+		JsonArray questsJson = new JsonArray();
+		for (String name : completedQuestNames)
+		{
+			questsJson.add(name);
+		}
+		JsonObject body = new JsonObject();
+		body.add("completed_quests", questsJson);
+		syncPayload("/api/players/me/quests", body, "quest_count", callback);
+	}
+
+	/** Sends the player's highest completed tier per achievement diary
+	 * area (POST /api/players/me/diaries -- see app/main.py in the
+	 * Mootrius/myscape repo) -- see MyscapePlugin#readDiaryTiers for how
+	 * this is actually computed from RuneLite's own per-tier "complete"
+	 * varbits. Always a full replace, like every other current-state
+	 * sync here. */
+	void syncDiaries(List<DiaryTierItem> diaryTiers, SyncCallback callback)
+	{
+		JsonArray diariesJson = new JsonArray();
+		for (DiaryTierItem tier : diaryTiers)
+		{
+			JsonObject tierJson = new JsonObject();
+			tierJson.addProperty("area", tier.area);
+			tierJson.addProperty("tier", tier.tier);
+			diariesJson.add(tierJson);
+		}
+		JsonObject body = new JsonObject();
+		body.add("diary_tiers", diariesJson);
+		syncPayload("/api/players/me/diaries", body, "area_count", callback);
+	}
+
 	/** Sends one loot event to myscape.io (POST /api/players/me/loot --
 	 * see app/main.py in the Mootrius/myscape repo) the moment it
 	 * happens, rather than being folded into the shared debounced sync
@@ -593,27 +702,40 @@ class MyscapeClient
 		});
 	}
 
-	/** Shared by syncBank/syncInventory/syncEquipment/syncPotionStorage/syncRunePouch -- all five POST
-	 * an {"items": [...]} body to their own path and get back the same
-	 * {"item_count": N} response.
+	/** Shared by syncBank/syncInventory/syncEquipment/syncPotionStorage/
+	 * syncRunePouch -- all five POST an {"items": [...]} body to their
+	 * own path and get back the same {"item_count": N} response, so
+	 * this just wraps the general syncPayload below with that one fixed
+	 * field name. */
+	private void syncItems(String path, JsonArray itemsJson, SyncCallback callback)
+	{
+		JsonObject body = new JsonObject();
+		body.add("items", itemsJson);
+		syncPayload(path, body, "item_count", callback);
+	}
+
+	/** Shared by every "current state" sync above -- syncItems (and
+	 * through it, bank/inventory/equipment/potion storage/rune pouch),
+	 * plus syncSkills/syncQuests/syncDiaries directly, since those three
+	 * don't share the {"items": [...]} envelope but do share everything
+	 * else about the request/response shape: POST `body` as-is to
+	 * `path`, and read the response's `countField` back out as the
+	 * count this sync's callback reports.
 	 *
 	 * Silently does nothing if not currently linked: there's no key to
 	 * authenticate with, and more importantly nothing to attribute the
 	 * snapshot to, so there's no failure worth surfacing to the player
 	 * here the way there is for an explicit action like linking or
 	 * unlinking -- these run automatically in the background every time
-	 * the relevant container changes, whether or not the player has
-	 * gotten around to linking yet. */
-	private void syncItems(String path, JsonArray itemsJson, SyncCallback callback)
+	 * the relevant state changes, whether or not the player has gotten
+	 * around to linking yet. */
+	private void syncPayload(String path, JsonObject body, String countField, SyncCallback callback)
 	{
 		String apiKey = configManager.getConfiguration(MyscapeConfig.GROUP, MyscapeConfig.API_KEY_KEY);
 		if (apiKey == null || apiKey.isEmpty())
 		{
 			return;
 		}
-
-		JsonObject body = new JsonObject();
-		body.add("items", itemsJson);
 
 		Request request = new Request.Builder()
 			.url(apiUrl(path))
@@ -650,7 +772,7 @@ class MyscapeClient
 						return;
 					}
 					JsonObject json = GSON.fromJson(responseBody, JsonObject.class);
-					callback.onSuccess(json.get("item_count").getAsInt());
+					callback.onSuccess(json.get(countField).getAsInt());
 				}
 				catch (Exception e)
 				{

@@ -5,9 +5,11 @@ import java.awt.image.BufferedImage;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -20,10 +22,16 @@ import net.runelite.api.EquipmentInventorySlot;
 import net.runelite.api.GameState;
 import net.runelite.api.Item;
 import net.runelite.api.ItemContainer;
+import net.runelite.api.Quest;
+import net.runelite.api.QuestState;
+import net.runelite.api.Skill;
 import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.events.ItemContainerChanged;
+import net.runelite.api.events.StatChanged;
 import net.runelite.api.events.VarbitChanged;
+import net.runelite.api.events.WidgetLoaded;
+import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.gameval.InventoryID;
 import net.runelite.api.gameval.ItemID;
 import net.runelite.api.gameval.VarbitID;
@@ -51,6 +59,18 @@ import okhttp3.OkHttpClient;
  * onItemContainerChanged, onGameTick, and onVarbitChanged below) -- and
  * reports every kill/clue-casket/pickpocket's loot as it happens (see
  * onLootReceived below), which the Loot Tracker feature is built on.
+ *
+ * Also keeps the player's current skill levels/xp, completed quests,
+ * and achievement diary tiers in sync (see readSkills/
+ * readCompletedQuestNames/readDiaryTiers, onStatChanged, onWidgetLoaded,
+ * and onVarbitChanged below) -- what the Mindmaps feature's skill/quest/
+ * diary goal nodes check themselves against server-side (see
+ * evaluate_completion in the Mootrius/myscape repo's app/mindmaps.py).
+ * Mindmaps' fourth goal type, kc (kill count), needs no plugin work of
+ * its own here at all: it's checked against this same player's synced
+ * LootEvent history (see onLootReceived below and kc_counts_by_player in
+ * the Mootrius/myscape repo's app/loot.py), which was already being
+ * captured for the Loot Tracker feature before Mindmaps existed.
  */
 @PluginDescriptor(
 	name = "myscape",
@@ -197,6 +217,105 @@ public class MyscapePlugin extends Plugin
 		ItemID.BH_RUNE_POUCH, ItemID.BH_RUNE_POUCH_TROUVER, ItemID.DIVINE_RUNE_POUCH, ItemID.DIVINE_RUNE_POUCH_TROUVER,
 	};
 
+	// Achievement diaries -- unlike bank/inventory/potion storage/rune
+	// pouch above, there's no ItemContainer-style "contents" to read at
+	// all here: each area+tier just has its own boolean "have every task
+	// in this tier been done" varbit, one of 48 (12 areas x 4 tiers).
+	// These are RuneLite's own named gameval VarbitID constants (e.g.
+	// VarbitID.ARDOUGNE_DIARY_EASY_COMPLETE), not raw ids guessed at --
+	// see e.g. the OSRS Wiki's RuneScape:Varbit/4478 page for
+	// KANDARIN_DIARY_ELITE_COMPLETE's own documented meaning ("Set to 1
+	// if you've completed all the tasks for the Elite Kandarin Diary").
+	// Keyed by the same lowercase/slugified area name DIARY_AREAS uses
+	// server-side (app/mindmaps.py in the Mootrius/myscape repo) --
+	// RuneLite's own area names don't all match that 1:1 (its "KOUREND"/
+	// "WESTERN"/"LUMBRIDGE" are this app's "kourend_kebos"/
+	// "western_provinces"/"lumbridge_draynor"), so this table is also
+	// what bridges that naming gap; each area's 4-element array is
+	// ordered low-to-high, matching DIARY_TIERS server-side (and
+	// DIARY_TIER_NAMES below). Karamja's easy/medium/hard varbits are
+	// gameval-named ATJUN_*_DONE rather than KARAMJA_DIARY_*_COMPLETE --
+	// a quirk of Jagex's own internal naming for that one area, not a
+	// mismatch on this end (confirmed against the same numeric ids the
+	// older, manually-maintained net.runelite.api.Varbits class uses for
+	// DIARY_KARAMJA_EASY/MEDIUM/HARD).
+	private static final String[] DIARY_TIER_NAMES = {"easy", "medium", "hard", "elite"};
+	private static final Map<String, int[]> DIARY_TIER_VARBITS = buildDiaryTierVarbits();
+
+	private static Map<String, int[]> buildDiaryTierVarbits()
+	{
+		Map<String, int[]> areas = new LinkedHashMap<>();
+		areas.put("ardougne", new int[]{
+			VarbitID.ARDOUGNE_DIARY_EASY_COMPLETE, VarbitID.ARDOUGNE_DIARY_MEDIUM_COMPLETE,
+			VarbitID.ARDOUGNE_DIARY_HARD_COMPLETE, VarbitID.ARDOUGNE_DIARY_ELITE_COMPLETE,
+		});
+		areas.put("desert", new int[]{
+			VarbitID.DESERT_DIARY_EASY_COMPLETE, VarbitID.DESERT_DIARY_MEDIUM_COMPLETE,
+			VarbitID.DESERT_DIARY_HARD_COMPLETE, VarbitID.DESERT_DIARY_ELITE_COMPLETE,
+		});
+		areas.put("falador", new int[]{
+			VarbitID.FALADOR_DIARY_EASY_COMPLETE, VarbitID.FALADOR_DIARY_MEDIUM_COMPLETE,
+			VarbitID.FALADOR_DIARY_HARD_COMPLETE, VarbitID.FALADOR_DIARY_ELITE_COMPLETE,
+		});
+		areas.put("fremennik", new int[]{
+			VarbitID.FREMENNIK_DIARY_EASY_COMPLETE, VarbitID.FREMENNIK_DIARY_MEDIUM_COMPLETE,
+			VarbitID.FREMENNIK_DIARY_HARD_COMPLETE, VarbitID.FREMENNIK_DIARY_ELITE_COMPLETE,
+		});
+		areas.put("kandarin", new int[]{
+			VarbitID.KANDARIN_DIARY_EASY_COMPLETE, VarbitID.KANDARIN_DIARY_MEDIUM_COMPLETE,
+			VarbitID.KANDARIN_DIARY_HARD_COMPLETE, VarbitID.KANDARIN_DIARY_ELITE_COMPLETE,
+		});
+		areas.put("karamja", new int[]{
+			VarbitID.ATJUN_EASY_DONE, VarbitID.ATJUN_MED_DONE,
+			VarbitID.ATJUN_HARD_DONE, VarbitID.KARAMJA_DIARY_ELITE_COMPLETE,
+		});
+		areas.put("kourend_kebos", new int[]{
+			VarbitID.KOUREND_DIARY_EASY_COMPLETE, VarbitID.KOUREND_DIARY_MEDIUM_COMPLETE,
+			VarbitID.KOUREND_DIARY_HARD_COMPLETE, VarbitID.KOUREND_DIARY_ELITE_COMPLETE,
+		});
+		areas.put("lumbridge_draynor", new int[]{
+			VarbitID.LUMBRIDGE_DIARY_EASY_COMPLETE, VarbitID.LUMBRIDGE_DIARY_MEDIUM_COMPLETE,
+			VarbitID.LUMBRIDGE_DIARY_HARD_COMPLETE, VarbitID.LUMBRIDGE_DIARY_ELITE_COMPLETE,
+		});
+		areas.put("morytania", new int[]{
+			VarbitID.MORYTANIA_DIARY_EASY_COMPLETE, VarbitID.MORYTANIA_DIARY_MEDIUM_COMPLETE,
+			VarbitID.MORYTANIA_DIARY_HARD_COMPLETE, VarbitID.MORYTANIA_DIARY_ELITE_COMPLETE,
+		});
+		areas.put("varrock", new int[]{
+			VarbitID.VARROCK_DIARY_EASY_COMPLETE, VarbitID.VARROCK_DIARY_MEDIUM_COMPLETE,
+			VarbitID.VARROCK_DIARY_HARD_COMPLETE, VarbitID.VARROCK_DIARY_ELITE_COMPLETE,
+		});
+		areas.put("western_provinces", new int[]{
+			VarbitID.WESTERN_DIARY_EASY_COMPLETE, VarbitID.WESTERN_DIARY_MEDIUM_COMPLETE,
+			VarbitID.WESTERN_DIARY_HARD_COMPLETE, VarbitID.WESTERN_DIARY_ELITE_COMPLETE,
+		});
+		areas.put("wilderness", new int[]{
+			VarbitID.WILDERNESS_DIARY_EASY_COMPLETE, VarbitID.WILDERNESS_DIARY_MEDIUM_COMPLETE,
+			VarbitID.WILDERNESS_DIARY_HARD_COMPLETE, VarbitID.WILDERNESS_DIARY_ELITE_COMPLETE,
+		});
+		return Collections.unmodifiableMap(areas);
+	}
+
+	// Every varbit id that appears anywhere in DIARY_TIER_VARBITS above,
+	// flattened into one set purely so onVarbitChanged below can do a
+	// single cheap membership check per event instead of walking all 12
+	// areas' arrays on every single varbit change in the game (most of
+	// which have nothing to do with diaries at all).
+	private static final Set<Integer> DIARY_VARBIT_IDS = buildDiaryVarbitIds();
+
+	private static Set<Integer> buildDiaryVarbitIds()
+	{
+		Set<Integer> ids = new HashSet<>();
+		for (int[] tierVarbits : DIARY_TIER_VARBITS.values())
+		{
+			for (int varbitId : tierVarbits)
+			{
+				ids.add(varbitId);
+			}
+		}
+		return Collections.unmodifiableSet(ids);
+	}
+
 	private MyscapePanel panel;
 	private NavigationButton navButton;
 	private ScheduledFuture<?> linkStatusPollTask;
@@ -235,6 +354,16 @@ public class MyscapePlugin extends Plugin
 	// varbits have actually fired at least once this session, same as
 	// Potion Storage above.
 	private volatile List<MyscapeClient.RunePouchItem> latestRunePouchItems;
+	// Same deal, for skills/quests/diaries -- unlike Potion Storage/Rune
+	// Pouch, though, these are never left null for long once logged in:
+	// see onGameTick's justBecameAvailable block, which reads all three
+	// the moment login is detected, the same reasoning that block already
+	// applies to inventory/equipment/rune pouch (nothing to "change" from
+	// a cold start -- there's already a real level/quest/diary state to
+	// report from the first tick).
+	private volatile List<MyscapeClient.SkillItem> latestSkillItems;
+	private volatile List<String> latestCompletedQuestNames;
+	private volatile List<MyscapeClient.DiaryTierItem> latestDiaryTierItems;
 
 	@Provides
 	MyscapeConfig provideConfig(ConfigManager configManager)
@@ -291,6 +420,9 @@ public class MyscapePlugin extends Plugin
 		latestEquipmentItems = null;
 		latestPotionStorageItems = null;
 		latestRunePouchItems = null;
+		latestSkillItems = null;
+		latestCompletedQuestNames = null;
+		latestDiaryTierItems = null;
 	}
 
 	/** Aggregates a container's raw slots by item id -- necessary (not
@@ -534,6 +666,93 @@ public class MyscapePlugin extends Plugin
 		return items;
 	}
 
+	/** Every one of RuneLite's own Skill.values() -- real skill names as
+	 * RuneLite itself defines them, not some separately hardcoded 24-
+	 * entry list of this plugin's own, so a skill this client's RuneLite
+	 * build doesn't know about is simply never reported (and one it's
+	 * since added, like Sailing, is picked up automatically without this
+	 * plugin needing an update just to keep pace). `skill.name()` lower-
+	 * cased is always a single lowercase word for a real OSRS skill (e.g.
+	 * "attack", "sailing"), matching SKILL_NAMES in the Mootrius/myscape
+	 * repo's app/mindmaps.py exactly. getRealSkillLevel is the player's
+	 * base level (unaffected by a temporary boost/drain from a potion or
+	 * prayer) -- a goal should track real progress, not whatever a
+	 * player's level happens to be boosted to for the next few minutes.
+	 * Must only ever be called from the client thread, same as the other
+	 * readXItems methods above (both call sites below already guarantee
+	 * that). */
+	private List<MyscapeClient.SkillItem> readSkills()
+	{
+		List<MyscapeClient.SkillItem> items = new ArrayList<>();
+		for (Skill skill : Skill.values())
+		{
+			items.add(new MyscapeClient.SkillItem(
+				skill.name().toLowerCase(), client.getRealSkillLevel(skill), client.getSkillExperience(skill)));
+		}
+		return items;
+	}
+
+	/** Every net.runelite.api.Quest (RuneLite's own full quest and
+	 * miniquest list) this account has finished, by RuneLite's own
+	 * display name for it (e.g. "Cook's Assistant") -- matched case-
+	 * insensitively against a blue goal node's chosen quest server-side
+	 * (see Player.completed_quests' docstring in the Mootrius/myscape
+	 * repo's app/models.py), so nothing here needs to normalize or
+	 * cross-reference names against that server-side quest list itself.
+	 * Quest#getState is client-thread-only, same as the other readXItems
+	 * methods above (both call sites below already guarantee that) -- it
+	 * runs a client script and reads the result straight off the
+	 * client's own int stack, the same mechanism readPotionStorageItems
+	 * above already uses for a different script. */
+	private List<String> readCompletedQuestNames()
+	{
+		List<String> names = new ArrayList<>();
+		for (Quest quest : Quest.values())
+		{
+			if (quest.getState(client) == QuestState.FINISHED)
+			{
+				names.add(quest.getName());
+			}
+		}
+		return names;
+	}
+
+	/** This account's highest completed tier per achievement diary area,
+	 * from RuneLite's own per-tier "complete" varbits (see
+	 * DIARY_TIER_VARBITS above) -- an area with nothing completed yet is
+	 * simply left out of the result, matching how Player.diary_tiers only
+	 * ever stores one current tier per area server-side (see that same
+	 * docstring). Each area's 4 varbits are checked low-to-high and this
+	 * stops at the first one that ISN'T set, since the real diary journal
+	 * only ever lets a player finish a tier once every lower tier is
+	 * already done -- there's no such thing as Hard being complete while
+	 * Medium isn't, so nothing here needs to handle that. Must only ever
+	 * be called from the client thread, same as the other readXItems
+	 * methods above (both call sites below already guarantee that). */
+	private List<MyscapeClient.DiaryTierItem> readDiaryTiers()
+	{
+		List<MyscapeClient.DiaryTierItem> items = new ArrayList<>();
+		for (Map.Entry<String, int[]> entry : DIARY_TIER_VARBITS.entrySet())
+		{
+			String area = entry.getKey();
+			int[] tierVarbits = entry.getValue();
+			String highestTier = null;
+			for (int i = 0; i < tierVarbits.length; i++)
+			{
+				if (client.getVarbitValue(tierVarbits[i]) != 1)
+				{
+					break;
+				}
+				highestTier = DIARY_TIER_NAMES[i];
+			}
+			if (highestTier != null)
+			{
+				items.add(new MyscapeClient.DiaryTierItem(area, highestTier));
+			}
+		}
+		return items;
+	}
+
 	@Subscribe
 	public void onItemContainerChanged(ItemContainerChanged event)
 	{
@@ -662,6 +881,30 @@ public class MyscapePlugin extends Plugin
 	// this listener below observes it.
 	private boolean runePouchDirty;
 
+	// Same deal, for skills -- set from onStatChanged below, which fires
+	// once per skill on login (as every skill's real value first becomes
+	// known) and again any time a skill's xp/level actually changes,
+	// deliberately NOT any time its BOOSTED level alone changes (a
+	// potion/prayer wearing off shouldn't trigger a resync -- see
+	// onStatChanged's own comment).
+	private boolean skillsDirty;
+
+	// Same deal, for completed quests -- set from onWidgetLoaded below
+	// when the "quest complete" scroll interface loads, the one reliable
+	// generic signal that SOME quest just finished (there's no single
+	// varp/varbit that changes for every quest the way there is for
+	// bank/potion storage/rune pouch above -- each quest tracks its own
+	// completion in its own varps, which is exactly what
+	// Quest#getState reads per-quest, not something this plugin
+	// duplicates here).
+	private boolean questsDirty;
+
+	// Same deal, for achievement diary tiers -- set from onVarbitChanged
+	// below when one of the 48 diary "tier complete" varbits themselves
+	// changes (see DIARY_VARBIT_IDS), unlike quests above where no single
+	// generic signal exists.
+	private boolean diariesDirty;
+
 	@Subscribe
 	public void onVarbitChanged(VarbitChanged event)
 	{
@@ -675,6 +918,42 @@ public class MyscapePlugin extends Plugin
 		if (isRunePouchVarbit(varbitId))
 		{
 			runePouchDirty = true;
+		}
+		if (DIARY_VARBIT_IDS.contains(varbitId))
+		{
+			diariesDirty = true;
+		}
+	}
+
+	/** Fires once per skill the instant its xp, real level, or boosted
+	 * level changes -- including, notably, a temporary boost/drain from a
+	 * potion or prayer alone, with xp/real level unchanged. Only THOSE
+	 * two (xp or real level) actually moving is worth a resync (a skill
+	 * goal tracks real progress, never a transient boost -- see
+	 * readSkills' own comment), but this still marks skillsDirty on every
+	 * firing rather than filtering here: readSkills re-reads all 24
+	 * skills in one pass regardless of which one changed, so a spurious
+	 * boost-only firing costs nothing beyond scheduling a debounce that
+	 * (correctly) resends the exact same numbers as last time. */
+	@Subscribe
+	public void onStatChanged(StatChanged event)
+	{
+		skillsDirty = true;
+	}
+
+	/** Fires whenever any game interface loads -- checked here for
+	 * specifically the "quest complete" scroll (InterfaceID.QUESTSCROLL,
+	 * RuneLite's own named id for it), the interface OSRS shows the
+	 * instant a quest is finished. This is the trigger for WHEN to
+	 * recheck, not the data itself -- readCompletedQuestNames (via
+	 * Quest#getState) is what actually determines which quests are done,
+	 * same division of labor as onVarbitChanged/readDiaryTiers below. */
+	@Subscribe
+	public void onWidgetLoaded(WidgetLoaded event)
+	{
+		if (event.getGroupId() == InterfaceID.QUESTSCROLL)
+		{
+			questsDirty = true;
 		}
 	}
 
@@ -709,16 +988,18 @@ public class MyscapePlugin extends Plugin
 	}
 
 	/** (Re)schedules the single shared debounce task -- shared across
-	 * bank/inventory/equipment/potion storage rather than one per
-	 * container, since a player actively shopping typically touches
-	 * more than one of them in the same burst (withdrawing from the
-	 * bank, then equipping what they withdrew), and there's no reason
-	 * to send four separate requests a couple of ticks apart for what's
-	 * really one action. When it fires, it syncs whichever of the four
-	 * have actually been observed at least once (see the field docs
-	 * above) -- reading only the already-captured volatile snapshots,
-	 * never the RuneLite Client itself, since this runs on `executor`'s
-	 * thread, not the client thread. */
+	 * bank/inventory/equipment/potion storage/rune pouch/skills/quests/
+	 * diaries rather than one per source, since a player actively
+	 * shopping or grinding typically touches more than one of them in
+	 * the same burst (withdrawing from the bank, then equipping what
+	 * they withdrew; training a skill while also banking its product),
+	 * and there's no reason to send several separate requests a couple
+	 * of ticks apart for what's really one burst of activity. When it
+	 * fires, it syncs whichever of these have actually been observed at
+	 * least once (see the field docs above) -- reading only the
+	 * already-captured volatile snapshots, never the RuneLite Client
+	 * itself, since this runs on `executor`'s thread, not the client
+	 * thread. */
 	private void scheduleSyncDebounced()
 	{
 		if (syncDebounceTask != null)
@@ -729,7 +1010,10 @@ public class MyscapePlugin extends Plugin
 			() -> {
 				if (panel != null)
 				{
-					panel.syncInBackground(latestBankItems, latestInventoryItems, latestEquipmentItems, latestPotionStorageItems, latestRunePouchItems);
+					panel.syncInBackground(
+						latestBankItems, latestInventoryItems, latestEquipmentItems,
+						latestPotionStorageItems, latestRunePouchItems,
+						latestSkillItems, latestCompletedQuestNames, latestDiaryTierItems);
 				}
 			},
 			SYNC_DEBOUNCE_SECONDS, TimeUnit.SECONDS);
@@ -788,6 +1072,31 @@ public class MyscapePlugin extends Plugin
 				scheduleSyncDebounced();
 			}
 
+			// Same deal, for skills (see skillsDirty's field doc).
+			if (skillsDirty)
+			{
+				skillsDirty = false;
+				latestSkillItems = readSkills();
+				scheduleSyncDebounced();
+			}
+
+			// Same deal, for completed quests (see questsDirty's field doc).
+			if (questsDirty)
+			{
+				questsDirty = false;
+				latestCompletedQuestNames = readCompletedQuestNames();
+				scheduleSyncDebounced();
+			}
+
+			// Same deal, for achievement diary tiers (see diariesDirty's
+			// field doc).
+			if (diariesDirty)
+			{
+				diariesDirty = false;
+				latestDiaryTierItems = readDiaryTiers();
+				scheduleSyncDebounced();
+			}
+
 			// onGameStateChanged (below) fires the instant the game
 			// state flips to LOGGED_IN, but getAccountHash() isn't
 			// populated until this tick handler runs afterward -- so
@@ -833,6 +1142,19 @@ public class MyscapePlugin extends Plugin
 				// rather than only ever reacting to onVarbitChanged/
 				// onItemContainerChanged from this point forward.
 				latestRunePouchItems = readRunePouchItems();
+				// Same reasoning again, for skills/quests/diaries: all
+				// three are already fully known the instant login
+				// finishes (skill levels don't need to be trained this
+				// session, quests/diaries don't need to be completed this
+				// session, to be worth reporting) -- captured here rather
+				// than only ever reacting to onStatChanged/onWidgetLoaded/
+				// onVarbitChanged from this point forward, so a fresh
+				// install reports a player's already-existing progress
+				// right away instead of waiting for the next change in
+				// each.
+				latestSkillItems = readSkills();
+				latestCompletedQuestNames = readCompletedQuestNames();
+				latestDiaryTierItems = readDiaryTiers();
 				scheduleSyncDebounced();
 			}
 		}

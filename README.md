@@ -8,9 +8,14 @@ PostgreSQL backend and website both this plugin and the browser talk to.
 ## What's here right now
 
 Account linking, plus the character data collection built on top of it:
-automatic bank, inventory, and worn-equipment syncing, which is what
-feeds the website's Purchase Goals feature. Nothing tracks loot yet; see
-"Next steps" below.
+automatic bank, inventory, worn-equipment, Potion Storage, and Rune
+Pouch syncing (what feeds the website's Purchase Goals feature), every
+kill/clue-casket/pickpocket's loot as it happens (what feeds the Loot
+Tracker), and current skill levels/xp, completed quests, and achievement
+diary tiers (what feeds Mindmaps' skill/quest/diary goal nodes -- see
+"Skills, quests, and achievement diaries sync" below; Mindmaps' fourth
+goal type, kill count, needs nothing further here at all -- it's checked
+against the same synced loot history the Loot Tracker already collects).
 
 - `src/main/java/io/myscape/plugin/MyscapePlugin.java` -- the plugin
   entry point. Adds a sidebar icon/panel, tracks the logged-in player's
@@ -104,6 +109,42 @@ server-side too, matching what actually happened in the game. See
 "Bank, inventory, and equipment sync" in the myscape repo's README for
 the backend side of this.
 
+## Skills, quests, and achievement diaries sync
+
+Once linked, three more things sync alongside bank/inventory/equipment,
+each feeding a Mindmaps goal type (`app/mindmaps.py` in the myscape
+repo):
+
+- **Skills** (green goals) -- every `net.runelite.api.Skill` value's
+  real (unboosted) level and xp, read in one pass (`readSkills`) rather
+  than hardcoding the 24 real OSRS skills separately here, so a skill
+  this client's RuneLite build doesn't yet know about is simply never
+  reported, and one it's since added (Sailing) is picked up
+  automatically. Resynced whenever `StatChanged` fires for any skill.
+- **Completed quests** (blue goals) -- every `net.runelite.api.Quest`
+  (RuneLite's own full quest-and-miniquest list) this account has
+  finished, by RuneLite's own name for it (`readCompletedQuestNames`).
+  There's no single varp/varbit that changes for "a quest finished" the
+  way there is for the sync sources above, so this resyncs off the one
+  reliable generic signal instead: the "quest complete" scroll interface
+  loading (`InterfaceID.QUESTSCROLL`, via `onWidgetLoaded`).
+- **Achievement diary tiers** (purple goals) -- the highest completed
+  tier per diary area, from RuneLite's own per-area-per-tier "complete"
+  varbits (`readDiaryTiers`, `DIARY_TIER_VARBITS`) -- confirmed against
+  both RuneLite's current gameval `VarbitID` constants and the older,
+  manually-maintained `net.runelite.api.Varbits` class (which agree on
+  every id), plus the OSRS Wiki's own varbit documentation, rather than
+  guessed. Resynced whenever one of those 48 varbits itself changes.
+
+All three are also read proactively at login (`onGameTick`'s
+`justBecameAvailable` branch), same as inventory/equipment/Rune Pouch --
+a player's existing levels, completed quests, and diary tiers are
+already real progress the moment login finishes, not something that
+needs to change again first to be worth reporting. And, same as bank/
+inventory/equipment/Potion Storage/Rune Pouch, all three go through the
+one shared 2-second debounce (`scheduleSyncDebounced`) rather than
+syncing on every single individual change.
+
 ## Building this
 
 `./gradlew build` compiles clean (zero errors, zero warnings) against
@@ -140,6 +181,15 @@ link against; actually linking against a real myscape.io account in a
 real RuneLite client, with a display, is still the real end-to-end test
 and hasn't been done.
 
+The skill/quest/diary sync code above was verified the same real way --
+`compileJava` against the actual `net.runelite:client` jar (1.12.38),
+not just written to look right -- though as a `compileJava`-only check
+in a separate build environment, not a full `./gradlew build` run
+through the wrapper the way the paragraph above describes; a full
+`./gradlew build`/`./gradlew run` pass covering this round's changes
+specifically is still worth doing before calling this end-to-end
+verified.
+
 ## Next steps (not built yet)
 
 - ~~Purchase Goals: bank reading/syncing is done; inventory and GE data
@@ -148,9 +198,17 @@ and hasn't been done.
   "Bank, inventory, and equipment sync" above) and the website's
   Purchase Goals page reads all three live, at
   `/dashboard/purchase-goals` in the myscape repo.
-- Loot Tracker: subscribe to RuneLite's loot-received events (NPC kills,
-  chests, etc.) and POST them to the backend once that data model/API
-  exists there.
+- ~~Loot Tracker: subscribe to RuneLite's loot-received events (NPC
+  kills, chests, etc.) and POST them to the backend once that data
+  model/API exists there~~ done -- see `onLootReceived` in
+  `MyscapePlugin.java`.
+- ~~Mindmaps' kc/skill/quest/diary goal types: nothing synced them
+  yet~~ done -- see "Skills, quests, and achievement diaries sync"
+  above (kc needed no new sync at all; it reads the same loot history
+  the line above already covers).
+- Player-Owned-House Seed Vault: the backend already has a sync endpoint
+  for it (`POST /api/players/me/seed-vault`, mirroring Potion Storage/
+  Rune Pouch), but nothing in this plugin reads or sends it yet.
 - Submitting to the RuneLite Plugin Hub, once there's more than linking
   to show -- see https://github.com/runelite/plugin-hub for its
   requirements (this plugin isn't in a submittable state yet: no unit

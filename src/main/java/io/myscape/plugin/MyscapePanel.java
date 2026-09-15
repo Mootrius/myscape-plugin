@@ -74,6 +74,13 @@ class MyscapePanel extends PluginPanel
 	private Integer lastEquipmentItemCount;
 	private Integer lastPotionStorageItemCount;
 	private Integer lastRunePouchItemCount;
+	// Same deal, for skills/completed quests/diary tiers -- the size of
+	// the most recently confirmed snapshot for each, same reasoning as
+	// the five item-source counts above (and reset alongside them in
+	// showLinked below).
+	private Integer lastSkillCount;
+	private Integer lastQuestCount;
+	private Integer lastDiaryAreaCount;
 	// Unlike the four counts above (the size of the most recent
 	// snapshot), this is a running total of how many *new* loot events
 	// this session has actually synced (see syncLootInBackground) --
@@ -285,6 +292,9 @@ class MyscapePanel extends PluginPanel
 		lastPotionStorageItemCount = null;
 		lastRunePouchItemCount = null;
 		lastLootEventCount = null;
+		lastSkillCount = null;
+		lastQuestCount = null;
+		lastDiaryAreaCount = null;
 		String name = runescapeName != null ? runescapeName : plugin.getRuneScapeName();
 		linkedNameLabel.setText("<html>Linked as <b>" + escape(name != null ? name : "your game account") + "</b></html>");
 		cards.show(cardPanel, CARD_LINKED);
@@ -363,11 +373,13 @@ class MyscapePanel extends PluginPanel
 	}
 
 	/** Called by the plugin (see MyscapePlugin#scheduleSyncDebounced),
-	 * off the EDT, once bank/inventory/equipment/potion storage have
-	 * settled after a change -- syncs whichever of the four have
-	 * actually been observed this session (any of the four arguments
-	 * may be null; see the field docs on MyscapePlugin's latest*Items
-	 * fields) and, on each success, updates the small status line on
+	 * off the EDT, once bank/inventory/equipment/potion storage/rune
+	 * pouch/skills/quests/diaries have settled after a change -- syncs
+	 * whichever of these have actually been observed this session (any
+	 * argument may be null; see the field docs on MyscapePlugin's
+	 * latest*Items/latestSkillItems/latestCompletedQuestNames/
+	 * latestDiaryTierItems fields) and, on each success, updates the
+	 * small status line on
 	 * the linked card so there's some visible confirmation this is
 	 * actually working, the same way linking and unlinking already give
 	 * feedback. A failure is shown the same quiet way the background
@@ -381,7 +393,10 @@ class MyscapePanel extends PluginPanel
 		List<MyscapeClient.InventoryItem> inventoryItems,
 		List<MyscapeClient.EquipmentItem> equipmentItems,
 		List<MyscapeClient.PotionStorageItem> potionStorageItems,
-		List<MyscapeClient.RunePouchItem> runePouchItems)
+		List<MyscapeClient.RunePouchItem> runePouchItems,
+		List<MyscapeClient.SkillItem> skillItems,
+		List<String> completedQuestNames,
+		List<MyscapeClient.DiaryTierItem> diaryTierItems)
 	{
 		if (bankItems != null)
 		{
@@ -402,6 +417,18 @@ class MyscapePanel extends PluginPanel
 		if (runePouchItems != null)
 		{
 			client.syncRunePouch(runePouchItems, syncCallback(count -> lastRunePouchItemCount = count));
+		}
+		if (skillItems != null)
+		{
+			client.syncSkills(skillItems, syncCallback(count -> lastSkillCount = count));
+		}
+		if (completedQuestNames != null)
+		{
+			client.syncQuests(completedQuestNames, syncCallback(count -> lastQuestCount = count));
+		}
+		if (diaryTierItems != null)
+		{
+			client.syncDiaries(diaryTierItems, syncCallback(count -> lastDiaryAreaCount = count));
 		}
 	}
 
@@ -501,6 +528,18 @@ class MyscapePanel extends PluginPanel
 		if (lastRunePouchItemCount != null)
 		{
 			parts.add(lastRunePouchItemCount + " rune pouch");
+		}
+		if (lastSkillCount != null)
+		{
+			parts.add(lastSkillCount + " skills");
+		}
+		if (lastQuestCount != null)
+		{
+			parts.add(lastQuestCount + " quests");
+		}
+		if (lastDiaryAreaCount != null)
+		{
+			parts.add(lastDiaryAreaCount + " diary areas");
 		}
 		if (lastLootEventCount != null)
 		{
