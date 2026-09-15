@@ -596,11 +596,43 @@ public class MyscapePlugin extends Plugin
 	 * everywhere else in this file that reads it) -- until then, a
 	 * banked pouch simply isn't detectable yet, same as the rest of the
 	 * bank's own contents. Must only ever be called from the client
-	 * thread, same as readRunePouchItems. */
+	 * thread, same as readRunePouchItems. Only ever consulted by
+	 * playerDefinitelyDoesNotOwnRunePouch below now, not
+	 * readRunePouchItems directly -- see that method's own doc for why
+	 * "not found here (yet)" and "confirmed not owned" ended up needing
+	 * to be two different questions. */
 	private boolean playerOwnsRunePouch()
 	{
 		return containerHasRunePouch(client.getItemContainer(InventoryID.INV))
 			|| containerHasRunePouch(client.getItemContainer(InventoryID.BANK));
+	}
+
+	/** The actual gate readRunePouchItems uses -- deliberately NOT just
+	 * "!playerOwnsRunePouch()". A fresh login populates the Rune Pouch
+	 * varbits immediately (account-wide state, same as every other stat)
+	 * but leaves the bank ItemContainer null until the player opens their
+	 * bank at least once this session (see playerOwnsRunePouch's own
+	 * comment) -- so right after login, with a pouch stocked and safely
+	 * banked, playerOwnsRunePouch() would report false (inventory empty,
+	 * bank not loaded yet) even though the player still genuinely owns
+	 * it, and readRunePouchItems would wrongly report an empty pouch
+	 * until the bank happened to get opened. "Haven't found it (in a
+	 * container we can't even see yet)" and "confirmed it's actually
+	 * gone" are different things, and only the second one should ever
+	 * suppress otherwise-valid varbit data: this returns true (state the
+	 * varbits every session actually trust) whenever inventory AND a
+	 * *loaded* bank both fail to show a pouch, but stays false -- "not
+	 * proven, so don't assume it's gone" -- for as long as the bank
+	 * container is still null, exactly the login gap this exists to
+	 * cover. Must only ever be called from the client thread, same as
+	 * readRunePouchItems. */
+	private boolean playerDefinitelyDoesNotOwnRunePouch()
+	{
+		if (client.getItemContainer(InventoryID.BANK) == null)
+		{
+			return false;
+		}
+		return !playerOwnsRunePouch();
 	}
 
 	private static boolean containerHasRunePouch(ItemContainer container)
@@ -632,19 +664,22 @@ public class MyscapePlugin extends Plugin
 	 * readXItems methods (both call sites below already guarantee that).
 	 *
 	 * Returns an empty list -- rather than whatever the varbits happen
-	 * to still say -- when the player doesn't currently have a Rune
-	 * Pouch anywhere in their inventory or bank (see
-	 * playerOwnsRunePouch): unlike Potion Storage, these varbits are the
-	 * pouch's own carried state, so without this check, a pouch that was sold or
-	 * otherwise given up while stocked would keep being reported as
-	 * "owned" contents long after both it and the runes actually left
-	 * the account. Multiple slots holding the same rune type (not
-	 * possible in-game today, but nothing guarantees that) are merged
-	 * into one entry, same as aggregateQuantities does for bank/
+	 * to still say -- once the player's CONFIRMED to no longer have a
+	 * Rune Pouch anywhere in their inventory or a *loaded* bank (see
+	 * playerDefinitelyDoesNotOwnRunePouch): unlike Potion Storage, these
+	 * varbits are the pouch's own carried state, so without some check
+	 * here, a pouch that was sold or otherwise given up while stocked
+	 * would keep being reported as "owned" contents long after both it
+	 * and the runes actually left the account. Deliberately NOT gated on
+	 * plain ownership (playerOwnsRunePouch) any more, though -- see
+	 * playerDefinitelyDoesNotOwnRunePouch's own doc for the login-gap bug
+	 * that distinction fixes. Multiple slots holding the same rune type
+	 * (not possible in-game today, but nothing guarantees that) are
+	 * merged into one entry, same as aggregateQuantities does for bank/
 	 * inventory. */
 	private List<MyscapeClient.RunePouchItem> readRunePouchItems()
 	{
-		if (!playerOwnsRunePouch())
+		if (playerDefinitelyDoesNotOwnRunePouch())
 		{
 			return Collections.emptyList();
 		}
