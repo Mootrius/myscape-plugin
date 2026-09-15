@@ -54,8 +54,9 @@ import okhttp3.OkHttpClient;
  * generates a short-lived code on the website and pastes it into this
  * plugin's side panel, which exchanges it for a long-lived API key),
  * and, once linked, keeps the website's copy of the player's bank,
- * inventory, worn equipment, Rune Pouch, and Potion Storage in sync --
- * the data collection the Purchase Goals feature is built on (see
+ * inventory, worn equipment, Rune Pouch, Potion Storage, and Looting Bag
+ * in sync -- the data collection the Purchase Goals and Possessions
+ * Monitoring features are built on (see
  * onItemContainerChanged, onGameTick, and onVarbitChanged below) -- and
  * reports every kill/clue-casket/pickpocket's loot as it happens (see
  * onLootReceived below), which the Loot Tracker feature is built on.
@@ -354,6 +355,12 @@ public class MyscapePlugin extends Plugin
 	// varbits have actually fired at least once this session, same as
 	// Potion Storage above.
 	private volatile List<MyscapeClient.RunePouchItem> latestRunePouchItems;
+	// Same deal, for a Looting Bag's contents -- unlike Potion Storage/
+	// Rune Pouch above, a Looting Bag genuinely is an ItemContainer
+	// (InventoryID.LOOTING_BAG), read the same straightforward way Bank
+	// is -- null until the player has actually opened it at least once
+	// this session, same caveat as Bank.
+	private volatile List<MyscapeClient.LootingBagItem> latestLootingBagItems;
 	// Same deal, for skills/quests/diaries -- unlike Potion Storage/Rune
 	// Pouch, though, these are never left null for long once logged in:
 	// see onGameTick's justBecameAvailable block, which reads all three
@@ -393,6 +400,12 @@ public class MyscapePlugin extends Plugin
 				if (panel != null)
 				{
 					panel.recheckLinkStatusInBackground();
+					// Same cadence as the link-status check just above --
+					// keeps the Status section's per-storage rows honest
+					// even for a storage nothing in this session has
+					// triggered a resync of (see
+					// MyscapePanel#refreshSyncStatusInBackground).
+					panel.refreshSyncStatusInBackground();
 				}
 			},
 			LINK_STATUS_POLL_SECONDS, LINK_STATUS_POLL_SECONDS, TimeUnit.SECONDS);
@@ -420,6 +433,7 @@ public class MyscapePlugin extends Plugin
 		latestEquipmentItems = null;
 		latestPotionStorageItems = null;
 		latestRunePouchItems = null;
+		latestLootingBagItems = null;
 		latestSkillItems = null;
 		latestCompletedQuestNames = null;
 		latestDiaryTierItems = null;
@@ -486,6 +500,21 @@ public class MyscapePlugin extends Plugin
 		for (Map.Entry<Integer, Integer> entry : aggregateQuantities(inventory).entrySet())
 		{
 			items.add(new MyscapeClient.InventoryItem(entry.getKey(), resolveItemName(entry.getKey()), entry.getValue()));
+		}
+		return items;
+	}
+
+	/** A Looting Bag genuinely is an ItemContainer (InventoryID.
+	 * LOOTING_BAG), unlike Potion Storage/Rune Pouch below -- read the
+	 * same straightforward way Bank is (see readBankItems above), only
+	 * reporting contents once the player has actually opened it at
+	 * least once this session (same caveat as Bank). */
+	private List<MyscapeClient.LootingBagItem> readLootingBagItems(ItemContainer lootingBag)
+	{
+		List<MyscapeClient.LootingBagItem> items = new ArrayList<>();
+		for (Map.Entry<Integer, Integer> entry : aggregateQuantities(lootingBag).entrySet())
+		{
+			items.add(new MyscapeClient.LootingBagItem(entry.getKey(), resolveItemName(entry.getKey()), entry.getValue()));
 		}
 		return items;
 	}
@@ -839,6 +868,10 @@ public class MyscapePlugin extends Plugin
 		{
 			latestEquipmentItems = readEquipmentItems(container);
 		}
+		else if (containerId == InventoryID.LOOTING_BAG)
+		{
+			latestLootingBagItems = readLootingBagItems(container);
+		}
 		else
 		{
 			return;
@@ -1066,7 +1099,7 @@ public class MyscapePlugin extends Plugin
 				{
 					panel.syncInBackground(
 						latestBankItems, latestInventoryItems, latestEquipmentItems,
-						latestPotionStorageItems, latestRunePouchItems,
+						latestPotionStorageItems, latestRunePouchItems, latestLootingBagItems,
 						latestSkillItems, latestCompletedQuestNames, latestDiaryTierItems);
 				}
 			},

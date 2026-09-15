@@ -2,9 +2,12 @@ package io.myscape.plugin;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import java.io.IOException;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import net.runelite.client.config.ConfigManager;
 import okhttp3.Call;
 import okhttp3.Callback;
@@ -157,6 +160,29 @@ class MyscapeClient
 		}
 	}
 
+	/** Same shape as BankItem/InventoryItem again, for a Looting Bag's
+	 * contents -- see LootingBagItem in the Mootrius/myscape repo's
+	 * app/models.py for the server side, and
+	 * MyscapePlugin#readLootingBagItems for how this is actually built.
+	 * Unlike Potion Storage/Rune Pouch above, a Looting Bag genuinely IS
+	 * an ItemContainer (InventoryID.LOOTING_BAG) -- it's read the same
+	 * straightforward way Bank is, only reporting contents once the
+	 * player has actually opened it at least once this session (same
+	 * caveat as Bank). */
+	static final class LootingBagItem
+	{
+		final int itemId;
+		final String itemName;
+		final int quantity;
+
+		LootingBagItem(int itemId, String itemName, int quantity)
+		{
+			this.itemId = itemId;
+			this.itemName = itemName;
+			this.quantity = quantity;
+		}
+	}
+
 	/** One skill's current level+xp -- see Player.skills' docstring in
 	 * the Mootrius/myscape repo's app/models.py for the server side, and
 	 * MyscapePlugin#readSkills for how this is actually built. `skill`
@@ -279,6 +305,21 @@ class MyscapeClient
 	interface SyncCallback
 	{
 		void onSuccess(int itemCount);
+		void onFailure(String message);
+	}
+
+	/** Backs the side panel's Status section (see MyscapePanel's Status
+	 * card and fetchSyncStatus below) -- storages is keyed by the same
+	 * storage keys the server's own POSSESSION_STORAGE_KEYS uses ("bank",
+	 * "equipment", "inventory", "potion_storage", "seed_vault",
+	 * "rune_pouch", "looting_bag"), each value either an ISO-8601 instant
+	 * (that storage has synced at least once) or null (it never has --
+	 * see Player.storage_synced_at's own docstring server-side for why
+	 * that's a real, distinct state worth showing rather than just
+	 * inferring it from whether an item list happens to be empty). */
+	interface SyncStatusCallback
+	{
+		void onSuccess(Map<String, String> storages);
 		void onFailure(String message);
 	}
 
@@ -550,6 +591,92 @@ class MyscapeClient
 			itemsJson.add(itemJson);
 		}
 		syncItems("/api/players/me/rune-pouch", itemsJson, callback);
+	}
+
+	/** Same deal as syncBank, for a Looting Bag's contents (POST
+	 * /api/players/me/looting-bag). */
+	void syncLootingBag(List<LootingBagItem> items, SyncCallback callback)
+	{
+		JsonArray itemsJson = new JsonArray();
+		for (LootingBagItem item : items)
+		{
+			JsonObject itemJson = new JsonObject();
+			itemJson.addProperty("item_id", item.itemId);
+			itemJson.addProperty("item_name", item.itemName);
+			itemJson.addProperty("quantity", item.quantity);
+			itemsJson.add(itemJson);
+		}
+		syncItems("/api/players/me/looting-bag", itemsJson, callback);
+	}
+
+	/** Polls GET /api/players/me/sync-status (see app/main.py in the
+	 * Mootrius/myscape repo) -- what the side panel's Status section
+	 * actually shows (see MyscapePanel's Status card). Deliberately its
+	 * own request rather than folded into refreshLinkStatus above: link
+	 * status is checked on a slow, fixed poll from plugin startup, while
+	 * the Status section also needs to reflect this session's own syncs
+	 * the moment they land, and mixing the two would mean either polling
+	 * link status far more often than it needs (wasteful) or the Status
+	 * section lagging behind syncs that just happened (misleading). */
+	void fetchSyncStatus(SyncStatusCallback callback)
+	{
+		String apiKey = configManager.getConfiguration(MyscapeConfig.GROUP, MyscapeConfig.API_KEY_KEY);
+		if (apiKey == null || apiKey.isEmpty())
+		{
+			callback.onFailure("Not linked.");
+			return;
+		}
+
+		Request request = new Request.Builder()
+			.url(apiUrl("/api/players/me/sync-status"))
+			.header("Authorization", "Bearer " + apiKey)
+			.get()
+			.build();
+
+		httpClient.newCall(request).enqueue(new Callback()
+		{
+			@Override
+			public void onFailure(Call call, IOException e)
+			{
+				callback.onFailure("Could not reach myscape.io.");
+			}
+
+			@Override
+			public void onResponse(Call call, Response response)
+			{
+				try (Response r = response)
+				{
+					if (r.code() == 401)
+					{
+						clearStoredLink();
+						callback.onFailure("No longer linked to myscape.io.");
+						return;
+					}
+					String responseBody = r.body() != null ? r.body().string() : "";
+					if (!r.isSuccessful())
+					{
+						callback.onFailure(describeError(r.code(), responseBody));
+						return;
+					}
+					JsonObject json = GSON.fromJson(responseBody, JsonObject.class);
+					JsonObject storagesJson = json.getAsJsonObject("storages");
+					Map<String, String> storages = new LinkedHashMap<>();
+					if (storagesJson != null)
+					{
+						for (Map.Entry<String, JsonElement> entry : storagesJson.entrySet())
+						{
+							JsonElement value = entry.getValue();
+							storages.put(entry.getKey(), value.isJsonNull() ? null : value.getAsString());
+						}
+					}
+					callback.onSuccess(storages);
+				}
+				catch (Exception e)
+				{
+					callback.onFailure("Unexpected response from myscape.io.");
+				}
+			}
+		});
 	}
 
 	/** Sends the player's current level+xp in every skill the plugin has

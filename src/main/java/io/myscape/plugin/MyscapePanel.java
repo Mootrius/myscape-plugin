@@ -1,12 +1,16 @@
 package io.myscape.plugin;
 
 import java.awt.BorderLayout;
+import java.awt.Color;
 import java.awt.Component;
 import java.awt.CardLayout;
 import java.awt.Dimension;
 import java.awt.event.ActionEvent;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.function.IntConsumer;
 import javax.swing.BorderFactory;
 import javax.swing.Box;
@@ -28,7 +32,13 @@ import net.runelite.client.ui.PluginPanel;
  * MyscapeClient stores and reuses for every future request. Also shows
  * a small status line on the linked card confirming the bank/inventory/
  * equipment sync MyscapePlugin triggers in the background is actually
- * working (see syncInBackground below).
+ * working (see syncInBackground below), plus a dedicated Status section
+ * underneath listing every storage this plugin can sync (bank,
+ * equipment, inventory, potion storage, seed vault, rune pouch, looting
+ * bag) and whether each one is currently synced to the website (see
+ * refreshSyncStatusInBackground/renderStatusRow below) -- the website's
+ * own Possessions Monitoring feature reads exactly these storages, so
+ * this is what tells a player whether it has everything it needs yet.
  *
  * Four states, one per CardLayout card: checking the stored key against
  * the server on startup, not logged into the game yet (nothing to link
@@ -40,6 +50,30 @@ class MyscapePanel extends PluginPanel
 	private static final String CARD_NOT_LOGGED_IN = "not-logged-in";
 	private static final String CARD_LINK = "link";
 	private static final String CARD_LINKED = "linked";
+
+	// The storages the Status section lists, in the exact order asked
+	// for -- matches POSSESSION_STORAGE_KEYS server-side (see
+	// SyncStatusOut's docstring in the Mootrius/myscape repo's
+	// app/schemas.py), which is also what GET /api/players/me/sync-status
+	// (fetchSyncStatus below) reports back keyed by. More storages will
+	// likely join this list later -- nothing here assumes exactly seven.
+	private static final String[] STATUS_STORAGE_KEYS = {
+		"bank", "equipment", "inventory", "potion_storage", "seed_vault", "rune_pouch", "looting_bag",
+	};
+	private static final Map<String, String> STATUS_STORAGE_LABELS = buildStatusStorageLabels();
+
+	private static Map<String, String> buildStatusStorageLabels()
+	{
+		Map<String, String> labels = new LinkedHashMap<>();
+		labels.put("bank", "Bank");
+		labels.put("equipment", "Equipment");
+		labels.put("inventory", "Inventory");
+		labels.put("potion_storage", "Potion Storage");
+		labels.put("seed_vault", "Seed Vault");
+		labels.put("rune_pouch", "Rune Pouch");
+		labels.put("looting_bag", "Looting Bag");
+		return Collections.unmodifiableMap(labels);
+	}
 
 	private final MyscapeClient client;
 	private final MyscapePlugin plugin;
@@ -55,6 +89,19 @@ class MyscapePanel extends PluginPanel
 	private final JButton unlinkButton = new JButton("Unlink");
 	private final JLabel unlinkErrorLabel = new JLabel();
 	private final JLabel syncStatusLabel = new JLabel();
+
+	// The Status section's own per-storage row labels (see
+	// buildLinkedCard) and the synced/not-synced state currently drawn
+	// into each -- Boolean rather than boolean so "not yet checked"
+	// (null, drawn as "Checking...") is a distinct third state from
+	// "checked, and it's genuinely never synced" (false). Populated by
+	// refreshSyncStatusInBackground below (the authoritative source,
+	// GET /api/players/me/sync-status) and updated optimistically the
+	// instant this session's own sync of that storage succeeds (see
+	// syncCallback), so the row doesn't have to wait for the next poll
+	// to reflect a sync that just visibly happened.
+	private final Map<String, JLabel> statusRowLabels = new LinkedHashMap<>();
+	private final Map<String, Boolean> storageSynced = new LinkedHashMap<>();
 
 	private boolean showingLinked;
 
@@ -74,6 +121,7 @@ class MyscapePanel extends PluginPanel
 	private Integer lastEquipmentItemCount;
 	private Integer lastPotionStorageItemCount;
 	private Integer lastRunePouchItemCount;
+	private Integer lastLootingBagItemCount;
 	// Same deal, for skills/completed quests/diary tiers -- the size of
 	// the most recently confirmed snapshot for each, same reasoning as
 	// the five item-source counts above (and reset alongside them in
@@ -177,6 +225,25 @@ class MyscapePanel extends PluginPanel
 		syncStatusLabel.setVisible(false);
 		panel.add(Box.createRigidArea(new Dimension(0, 10)));
 		panel.add(syncStatusLabel);
+
+		panel.add(Box.createRigidArea(new Dimension(0, 14)));
+		JLabel statusHeader = new JLabel("STATUS");
+		statusHeader.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
+		statusHeader.setAlignmentX(Component.LEFT_ALIGNMENT);
+		panel.add(statusHeader);
+		panel.add(Box.createRigidArea(new Dimension(0, 4)));
+
+		// One row per storage -- whether it's synced to the website yet
+		// (see STATUS_STORAGE_KEYS above and the class doc on
+		// storageSynced) -- built once here and only ever re-rendered
+		// in place afterward (see renderStatusRow), never rebuilt.
+		for (String key : STATUS_STORAGE_KEYS)
+		{
+			JLabel row = new JLabel();
+			row.setAlignmentX(Component.LEFT_ALIGNMENT);
+			statusRowLabels.put(key, row);
+			panel.add(row);
+		}
 
 		return panel;
 	}
@@ -291,6 +358,7 @@ class MyscapePanel extends PluginPanel
 		lastEquipmentItemCount = null;
 		lastPotionStorageItemCount = null;
 		lastRunePouchItemCount = null;
+		lastLootingBagItemCount = null;
 		lastLootEventCount = null;
 		lastSkillCount = null;
 		lastQuestCount = null;
@@ -298,6 +366,17 @@ class MyscapePanel extends PluginPanel
 		String name = runescapeName != null ? runescapeName : plugin.getRuneScapeName();
 		linkedNameLabel.setText("<html>Linked as <b>" + escape(name != null ? name : "your game account") + "</b></html>");
 		cards.show(cardPanel, CARD_LINKED);
+
+		// A fresh "Linked" screen means whatever the Status section last
+		// showed is stale too -- reset every row to "Checking..." and
+		// kick off an authoritative refresh rather than keep showing
+		// state left over from before (or from a different account).
+		storageSynced.clear();
+		for (String key : STATUS_STORAGE_KEYS)
+		{
+			renderStatusRow(key);
+		}
+		refreshSyncStatusInBackground();
 	}
 
 	private void onLinkClicked(ActionEvent event)
@@ -394,29 +473,34 @@ class MyscapePanel extends PluginPanel
 		List<MyscapeClient.EquipmentItem> equipmentItems,
 		List<MyscapeClient.PotionStorageItem> potionStorageItems,
 		List<MyscapeClient.RunePouchItem> runePouchItems,
+		List<MyscapeClient.LootingBagItem> lootingBagItems,
 		List<MyscapeClient.SkillItem> skillItems,
 		List<String> completedQuestNames,
 		List<MyscapeClient.DiaryTierItem> diaryTierItems)
 	{
 		if (bankItems != null)
 		{
-			client.syncBank(bankItems, syncCallback(count -> lastBankItemCount = count));
+			client.syncBank(bankItems, syncCallback("bank", count -> lastBankItemCount = count));
 		}
 		if (inventoryItems != null)
 		{
-			client.syncInventory(inventoryItems, syncCallback(count -> lastInventoryItemCount = count));
+			client.syncInventory(inventoryItems, syncCallback("inventory", count -> lastInventoryItemCount = count));
 		}
 		if (equipmentItems != null)
 		{
-			client.syncEquipment(equipmentItems, syncCallback(count -> lastEquipmentItemCount = count));
+			client.syncEquipment(equipmentItems, syncCallback("equipment", count -> lastEquipmentItemCount = count));
 		}
 		if (potionStorageItems != null)
 		{
-			client.syncPotionStorage(potionStorageItems, syncCallback(count -> lastPotionStorageItemCount = count));
+			client.syncPotionStorage(potionStorageItems, syncCallback("potion_storage", count -> lastPotionStorageItemCount = count));
 		}
 		if (runePouchItems != null)
 		{
-			client.syncRunePouch(runePouchItems, syncCallback(count -> lastRunePouchItemCount = count));
+			client.syncRunePouch(runePouchItems, syncCallback("rune_pouch", count -> lastRunePouchItemCount = count));
+		}
+		if (lootingBagItems != null)
+		{
+			client.syncLootingBag(lootingBagItems, syncCallback("looting_bag", count -> lastLootingBagItemCount = count));
 		}
 		if (skillItems != null)
 		{
@@ -471,10 +555,12 @@ class MyscapePanel extends PluginPanel
 	}
 
 	/** Builds a SyncCallback that records its result into whichever of
-	 * the three lastXItemCount fields `recordCount` closes over, then
-	 * refreshes the combined status line -- shared by all three calls in
-	 * syncInBackground above rather than three near-identical anonymous
-	 * classes. */
+	 * the lastXItemCount fields `recordCount` closes over, then
+	 * refreshes the combined status line -- shared by every call in
+	 * syncInBackground above rather than one near-identical anonymous
+	 * class per source. Used directly (no storage key) by
+	 * skills/quests/diaries, which aren't part of the Status section;
+	 * see the overload below for the six that are. */
 	private MyscapeClient.SyncCallback syncCallback(IntConsumer recordCount)
 	{
 		return new MyscapeClient.SyncCallback()
@@ -494,6 +580,118 @@ class MyscapePanel extends PluginPanel
 				// Ignored -- see the method doc above.
 			}
 		};
+	}
+
+	/** Same as the plain syncCallback above, plus marking storageKey
+	 * synced in the Status section the instant this sync succeeds --
+	 * used by the six item-source syncs in syncInBackground (bank,
+	 * inventory, equipment, potion storage, rune pouch, looting bag),
+	 * each of which corresponds to one of STATUS_STORAGE_KEYS. This is
+	 * deliberately optimistic (set the moment the response comes back,
+	 * not on the next poll of GET /api/players/me/sync-status) so the
+	 * row doesn't lag a successful sync the player can already see
+	 * reflected in the count above it -- refreshSyncStatusInBackground
+	 * below will confirm the same thing shortly anyway. */
+	private MyscapeClient.SyncCallback syncCallback(String storageKey, IntConsumer recordCount)
+	{
+		return new MyscapeClient.SyncCallback()
+		{
+			@Override
+			public void onSuccess(int itemCount)
+			{
+				SwingUtilities.invokeLater(() -> {
+					recordCount.accept(itemCount);
+					updateSyncStatusLabel();
+					storageSynced.put(storageKey, Boolean.TRUE);
+					renderStatusRow(storageKey);
+				});
+			}
+
+			@Override
+			public void onFailure(String message)
+			{
+				// Ignored -- see the method doc above.
+			}
+		};
+	}
+
+	/** Polls GET /api/players/me/sync-status (see MyscapeClient#fetchSyncStatus)
+	 * and refreshes every row in the Status section from the
+	 * authoritative server answer -- called once as soon as the panel
+	 * shows "Linked" (see showLinked) and again on MyscapePlugin's own
+	 * periodic background poll, the same cadence
+	 * recheckLinkStatusInBackground already runs on. A failure (offline,
+	 * not actually linked, ...) is ignored the same quiet way that
+	 * method's own background checks are -- this runs unprompted, not
+	 * from something the player clicked, so nothing here should
+	 * interrupt them; whatever the section last showed just stays put
+	 * until the next successful poll. */
+	void refreshSyncStatusInBackground()
+	{
+		if (!showingLinked)
+		{
+			return;
+		}
+		client.fetchSyncStatus(new MyscapeClient.SyncStatusCallback()
+		{
+			@Override
+			public void onSuccess(Map<String, String> storages)
+			{
+				SwingUtilities.invokeLater(() -> {
+					for (String key : STATUS_STORAGE_KEYS)
+					{
+						storageSynced.put(key, storages.get(key) != null);
+						renderStatusRow(key);
+					}
+				});
+			}
+
+			@Override
+			public void onFailure(String message)
+			{
+				// Ignored -- see the method doc above.
+			}
+		});
+	}
+
+	/** Redraws one Status section row from storageSynced's current view
+	 * of that key -- a filled dot + "Synced" in the site's own
+	 * completed-progress green once storageSynced.get(key) is true, an
+	 * empty dot + "Not synced yet" in a neutral gray once it's known
+	 * false (nothing alarming about that -- plenty of these, Seed Vault
+	 * especially right now, simply haven't been wired up to sync at all
+	 * yet), or "Checking..." for as long as it's still null (never
+	 * fetched this "Linked" session -- see showLinked). */
+	private void renderStatusRow(String key)
+	{
+		JLabel row = statusRowLabels.get(key);
+		if (row == null)
+		{
+			return;
+		}
+		String label = STATUS_STORAGE_LABELS.getOrDefault(key, key);
+		Boolean synced = storageSynced.get(key);
+		if (synced == null)
+		{
+			row.setText("<html><span style='color:" + toHex(ColorScheme.MEDIUM_GRAY_COLOR) + ";'>&#9675;</span> "
+				+ escape(label) + " &ndash; <i>Checking...</i></html>");
+			return;
+		}
+		if (synced)
+		{
+			row.setText("<html><span style='color:" + toHex(ColorScheme.PROGRESS_COMPLETE_COLOR) + ";'>&#9679;</span> "
+				+ escape(label) + " &ndash; Synced</html>");
+		}
+		else
+		{
+			row.setText("<html><span style='color:" + toHex(ColorScheme.MEDIUM_GRAY_COLOR) + ";'>&#9675;</span> "
+				+ escape(label) + " &ndash; Not synced yet</html>");
+		}
+	}
+
+	private static String toHex(Color color)
+	{
+		return String.format("#%02x%02x%02x", color.getRed(), color.getGreen(), color.getBlue());
 	}
 
 	/** Rebuilds the combined status line from whichever of
@@ -528,6 +726,10 @@ class MyscapePanel extends PluginPanel
 		if (lastRunePouchItemCount != null)
 		{
 			parts.add(lastRunePouchItemCount + " rune pouch");
+		}
+		if (lastLootingBagItemCount != null)
+		{
+			parts.add(lastLootingBagItemCount + " looting bag");
 		}
 		if (lastSkillCount != null)
 		{
