@@ -1099,6 +1099,10 @@ public class MyscapePlugin extends Plugin
 	public void onItemContainerChanged(ItemContainerChanged event)
 	{
 		int containerId = event.getContainerId();
+		// TEMPORARY DIAGNOSTIC -- unconditional, unlike
+		// logUnrecognizedPohContainer's range-limited logging below.
+		// Remove alongside the rest of the Costume Room diagnostics.
+		log.info("[myscape debug] onItemContainerChanged fired: containerId={}", containerId);
 		ItemContainer container = event.getItemContainer();
 		if (container == null)
 		{
@@ -1399,6 +1403,13 @@ public class MyscapePlugin extends Plugin
 	@Subscribe
 	public void onWidgetLoaded(WidgetLoaded event)
 	{
+		// TEMPORARY DIAGNOSTIC -- logs every widget group that loads, so
+		// that if the Costume Room storages turn out not to be
+		// ItemContainer-backed (see the onItemContainerChanged
+		// diagnostic above), the interface group id that actually opens
+		// for them shows up here instead. Remove alongside the rest of
+		// the Costume Room diagnostics.
+		log.info("[myscape debug] onWidgetLoaded fired: groupId={}", event.getGroupId());
 		if (event.getGroupId() == InterfaceID.QUESTSCROLL)
 		{
 			questsDirty = true;
