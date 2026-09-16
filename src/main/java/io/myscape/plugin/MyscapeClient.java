@@ -205,37 +205,14 @@ class MyscapeClient
 		}
 	}
 
-	/** Same shape as BankItem/InventoryItem/LootingBagItem/SeedVaultItem
-	 * again, for the Player-Owned-House Menagerie's stored pets -- see
-	 * MenagerieItem in the Mootrius/myscape repo's app/models.py for the
-	 * server side, and MyscapePlugin#readMenagerieItems for how this is
-	 * actually built. Same deal as Looting Bag/Seed Vault above: a
-	 * genuine ItemContainer (InventoryID.POH_MENAGERIE_PETS), read the
-	 * same straightforward way, only reporting contents once the player
-	 * has actually viewed the Menagerie room at least once this session
-	 * (same caveat as Bank/Looting Bag/Seed Vault). */
-	static final class MenagerieItem
-	{
-		final int itemId;
-		final String itemName;
-		final int quantity;
-
-		MenagerieItem(int itemId, String itemName, int quantity)
-		{
-			this.itemId = itemId;
-			this.itemName = itemName;
-			this.quantity = quantity;
-		}
-	}
-
 	/** Same shape again, for a Tackle Box's contents -- see
 	 * TackleBoxItem in the Mootrius/myscape repo's app/models.py for the
 	 * server side, and MyscapePlugin#readTackleBoxItems for how this is
-	 * actually built. Same deal as Looting Bag/Seed Vault/Menagerie
-	 * above: a genuine ItemContainer (InventoryID.TACKLE_BOX), read the
-	 * same straightforward way, only reporting contents once the player
-	 * has actually opened it at least once this session (same caveat as
-	 * Bank/Looting Bag/Seed Vault/Menagerie). */
+	 * actually built. Same deal as Looting Bag/Seed Vault above: a
+	 * genuine ItemContainer (InventoryID.TACKLE_BOX), read the same
+	 * straightforward way, only reporting contents once the player has
+	 * actually opened it at least once this session (same caveat as
+	 * Bank/Looting Bag/Seed Vault). */
 	static final class TackleBoxItem
 	{
 		final int itemId;
@@ -243,6 +220,96 @@ class MyscapeClient
 		final int quantity;
 
 		TackleBoxItem(int itemId, String itemName, int quantity)
+		{
+			this.itemId = itemId;
+			this.itemName = itemName;
+			this.quantity = quantity;
+		}
+	}
+
+	/** Same shape as BankItem/InventoryItem/LootingBagItem again, for the Costume Room's Magic Wardrobe -- see MagicWardrobeItem in the Mootrius/myscape repo's app/models.py for the server side, and MyscapePlugin#readMagicWardrobeItems for how this is actually built. Same deal as Looting Bag/Seed Vault/Tackle Box above: a genuine ItemContainer (InventoryID.POH_COSTUME_ROOM_MAGIC_WARDROBE_INV), read the same straightforward way, only reporting contents once the player has actually opened it at least once this session (same caveat as Bank/Looting Bag/Seed Vault/Tackle Box). */
+	static final class MagicWardrobeItem
+	{
+		final int itemId;
+		final String itemName;
+		final int quantity;
+
+		MagicWardrobeItem(int itemId, String itemName, int quantity)
+		{
+			this.itemId = itemId;
+			this.itemName = itemName;
+			this.quantity = quantity;
+		}
+	}
+
+	/** Same shape as MagicWardrobeItem above, for the Costume Room's Armour Case -- see ArmourCaseItem in the Mootrius/myscape repo's app/models.py for the server side, and MyscapePlugin#readArmourCaseItems for how this is actually built. Same deal: a genuine ItemContainer (InventoryID.POH_COSTUME_ROOM_ARMOUR_INV), same open-it-once caveat. */
+	static final class ArmourCaseItem
+	{
+		final int itemId;
+		final String itemName;
+		final int quantity;
+
+		ArmourCaseItem(int itemId, String itemName, int quantity)
+		{
+			this.itemId = itemId;
+			this.itemName = itemName;
+			this.quantity = quantity;
+		}
+	}
+
+	/** Same shape as MagicWardrobeItem/ArmourCaseItem above, for the Costume Room's Fancy Dress Box -- see FancyDressBoxItem in the Mootrius/myscape repo's app/models.py for the server side, and MyscapePlugin#readFancyDressBoxItems for how this is actually built. Same deal: a genuine ItemContainer (InventoryID.POH_COSTUME_ROOM_AME_INV -- Jagex's own internal name for this container; it's the Fancy Dress Box in-game), same open-it-once caveat. */
+	static final class FancyDressBoxItem
+	{
+		final int itemId;
+		final String itemName;
+		final int quantity;
+
+		FancyDressBoxItem(int itemId, String itemName, int quantity)
+		{
+			this.itemId = itemId;
+			this.itemName = itemName;
+			this.quantity = quantity;
+		}
+	}
+
+	/** Same shape as MagicWardrobeItem/ArmourCaseItem above, for the Costume Room's Toy Box -- see ToyBoxItem in the Mootrius/myscape repo's app/models.py for the server side, and MyscapePlugin#readToyBoxItems for how this is actually built. Same deal: a genuine ItemContainer (InventoryID.POH_COSTUME_ROOM_HOLIDAY_ITEMS_INV), same open-it-once caveat. */
+	static final class ToyBoxItem
+	{
+		final int itemId;
+		final String itemName;
+		final int quantity;
+
+		ToyBoxItem(int itemId, String itemName, int quantity)
+		{
+			this.itemId = itemId;
+			this.itemName = itemName;
+			this.quantity = quantity;
+		}
+	}
+
+	/** Same shape as MagicWardrobeItem/ArmourCaseItem above, for the Costume Room's Treasure Chest -- see TreasureChestItem in the Mootrius/myscape repo's app/models.py for the server side, and MyscapePlugin#readTreasureChestItems for how this is actually built. Unlike the other Costume Room storages, the Treasure Chest isn't one ItemContainer -- it's six, one per Treasure Trail difficulty tier, split across two widget pages (InventoryID.POH_COSTUME_ROOM_TREASURE_TRAIL_1_INV through _3_INV, and _1A_INV through _3A_INV), which MyscapePlugin#readTreasureChestItems merges into this one list before it ever reaches this class. */
+	static final class TreasureChestItem
+	{
+		final int itemId;
+		final String itemName;
+		final int quantity;
+
+		TreasureChestItem(int itemId, String itemName, int quantity)
+		{
+			this.itemId = itemId;
+			this.itemName = itemName;
+			this.quantity = quantity;
+		}
+	}
+
+	/** Same shape as MagicWardrobeItem/ArmourCaseItem above, for the Costume Room's Cape Rack -- see MagicCapeRackItem in the Mootrius/myscape repo's app/models.py for the server side, and MyscapePlugin#readMagicCapeRackItems for how this is actually built. Like the Treasure Chest above, this isn't one ItemContainer -- the Cape Rack's storage spans two widget pages (InventoryID.POH_COSTUME_ROOM_CAPES_INV and _CAPES_INV_PAGE2), which MyscapePlugin#readMagicCapeRackItems merges into this one list before it ever reaches this class. */
+	static final class MagicCapeRackItem
+	{
+		final int itemId;
+		final String itemName;
+		final int quantity;
+
+		MagicCapeRackItem(int itemId, String itemName, int quantity)
 		{
 			this.itemId = itemId;
 			this.itemName = itemName;
@@ -692,22 +759,6 @@ class MyscapeClient
 		syncItems("/api/players/me/seed-vault", itemsJson, callback);
 	}
 
-	/** Same deal as syncBank, for the Menagerie's stored pets (POST
-	 * /api/players/me/menagerie). */
-	void syncMenagerie(List<MenagerieItem> items, SyncCallback callback)
-	{
-		JsonArray itemsJson = new JsonArray();
-		for (MenagerieItem item : items)
-		{
-			JsonObject itemJson = new JsonObject();
-			itemJson.addProperty("item_id", item.itemId);
-			itemJson.addProperty("item_name", item.itemName);
-			itemJson.addProperty("quantity", item.quantity);
-			itemsJson.add(itemJson);
-		}
-		syncItems("/api/players/me/menagerie", itemsJson, callback);
-	}
-
 	/** Same deal as syncBank, for a Tackle Box's contents (POST
 	 * /api/players/me/tackle-box). */
 	void syncTackleBox(List<TackleBoxItem> items, SyncCallback callback)
@@ -722,6 +773,102 @@ class MyscapeClient
 			itemsJson.add(itemJson);
 		}
 		syncItems("/api/players/me/tackle-box", itemsJson, callback);
+	}
+
+	/** Same deal as syncBank, for the Costume Room's MagicWardrobe's contents
+	 * (POST /api/players/me/magic-wardrobe). */
+	void syncMagicWardrobe(List<MagicWardrobeItem> items, SyncCallback callback)
+	{
+		JsonArray itemsJson = new JsonArray();
+		for (MagicWardrobeItem item : items)
+		{
+			JsonObject itemJson = new JsonObject();
+			itemJson.addProperty("item_id", item.itemId);
+			itemJson.addProperty("item_name", item.itemName);
+			itemJson.addProperty("quantity", item.quantity);
+			itemsJson.add(itemJson);
+		}
+		syncItems("/api/players/me/magic-wardrobe", itemsJson, callback);
+	}
+
+	/** Same deal as syncBank, for the Costume Room's ArmourCase's contents
+	 * (POST /api/players/me/armour-case). */
+	void syncArmourCase(List<ArmourCaseItem> items, SyncCallback callback)
+	{
+		JsonArray itemsJson = new JsonArray();
+		for (ArmourCaseItem item : items)
+		{
+			JsonObject itemJson = new JsonObject();
+			itemJson.addProperty("item_id", item.itemId);
+			itemJson.addProperty("item_name", item.itemName);
+			itemJson.addProperty("quantity", item.quantity);
+			itemsJson.add(itemJson);
+		}
+		syncItems("/api/players/me/armour-case", itemsJson, callback);
+	}
+
+	/** Same deal as syncBank, for the Costume Room's FancyDressBox's contents
+	 * (POST /api/players/me/fancy-dress-box). */
+	void syncFancyDressBox(List<FancyDressBoxItem> items, SyncCallback callback)
+	{
+		JsonArray itemsJson = new JsonArray();
+		for (FancyDressBoxItem item : items)
+		{
+			JsonObject itemJson = new JsonObject();
+			itemJson.addProperty("item_id", item.itemId);
+			itemJson.addProperty("item_name", item.itemName);
+			itemJson.addProperty("quantity", item.quantity);
+			itemsJson.add(itemJson);
+		}
+		syncItems("/api/players/me/fancy-dress-box", itemsJson, callback);
+	}
+
+	/** Same deal as syncBank, for the Costume Room's ToyBox's contents
+	 * (POST /api/players/me/toy-box). */
+	void syncToyBox(List<ToyBoxItem> items, SyncCallback callback)
+	{
+		JsonArray itemsJson = new JsonArray();
+		for (ToyBoxItem item : items)
+		{
+			JsonObject itemJson = new JsonObject();
+			itemJson.addProperty("item_id", item.itemId);
+			itemJson.addProperty("item_name", item.itemName);
+			itemJson.addProperty("quantity", item.quantity);
+			itemsJson.add(itemJson);
+		}
+		syncItems("/api/players/me/toy-box", itemsJson, callback);
+	}
+
+	/** Same deal as syncBank, for the Costume Room's TreasureChest's contents
+	 * (POST /api/players/me/treasure-chest). */
+	void syncTreasureChest(List<TreasureChestItem> items, SyncCallback callback)
+	{
+		JsonArray itemsJson = new JsonArray();
+		for (TreasureChestItem item : items)
+		{
+			JsonObject itemJson = new JsonObject();
+			itemJson.addProperty("item_id", item.itemId);
+			itemJson.addProperty("item_name", item.itemName);
+			itemJson.addProperty("quantity", item.quantity);
+			itemsJson.add(itemJson);
+		}
+		syncItems("/api/players/me/treasure-chest", itemsJson, callback);
+	}
+
+	/** Same deal as syncBank, for the Costume Room's MagicCapeRack's contents
+	 * (POST /api/players/me/magic-cape-rack). */
+	void syncMagicCapeRack(List<MagicCapeRackItem> items, SyncCallback callback)
+	{
+		JsonArray itemsJson = new JsonArray();
+		for (MagicCapeRackItem item : items)
+		{
+			JsonObject itemJson = new JsonObject();
+			itemJson.addProperty("item_id", item.itemId);
+			itemJson.addProperty("item_name", item.itemName);
+			itemJson.addProperty("quantity", item.quantity);
+			itemsJson.add(itemJson);
+		}
+		syncItems("/api/players/me/magic-cape-rack", itemsJson, callback);
 	}
 
 	/** Polls GET /api/players/me/sync-status (see app/main.py in the
@@ -946,7 +1093,9 @@ class MyscapeClient
 
 	/** Shared by every "current state" container sync above (syncBank,
 	 * syncInventory, syncEquipment, syncPotionStorage, syncRunePouch,
-	 * syncLootingBag, syncSeedVault, syncMenagerie, syncTackleBox, ...)
+	 * syncLootingBag, syncSeedVault, syncTackleBox, syncMagicWardrobe,
+	 * syncArmourCase, syncFancyDressBox, syncToyBox, syncTreasureChest,
+	 * syncMagicCapeRack, ...)
 	 * -- each POSTs an {"items": [...]} body to its own path and gets
 	 * back the same {"item_count": N} response, so this just wraps the
 	 * general syncPayload below with that one fixed field name. */

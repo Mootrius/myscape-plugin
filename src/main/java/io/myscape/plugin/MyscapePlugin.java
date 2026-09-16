@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
@@ -411,17 +412,34 @@ public class MyscapePlugin extends Plugin
 	// way as the Looting Bag just above: null until the player has
 	// actually opened it at least once this session.
 	private volatile List<MyscapeClient.SeedVaultItem> latestSeedVaultItems;
-	// Same deal again, for the Menagerie's stored pets -- also a
-	// genuine ItemContainer (InventoryID.POH_MENAGERIE_PETS), read and
-	// gated the same way as Looting Bag/Seed Vault above: null until
-	// the player has actually viewed the Menagerie room at least once
-	// this session.
-	private volatile List<MyscapeClient.MenagerieItem> latestMenagerieItems;
 	// Same deal again, for a Tackle Box's contents -- also a genuine
 	// ItemContainer (InventoryID.TACKLE_BOX), read and gated the same
-	// way as Looting Bag/Seed Vault/Menagerie above: null until the
-	// player has actually opened it at least once this session.
+	// way as Looting Bag/Seed Vault above: null until the player has
+	// actually opened it at least once this session.
 	private volatile List<MyscapeClient.TackleBoxItem> latestTackleBoxItems;
+	// Same deal again, for the Costume Room's four single-container
+	// storages -- each also a genuine ItemContainer, read and gated the
+	// same way as Looting Bag/Seed Vault/Tackle Box above: null until
+	// the player has actually opened that piece of furniture at least
+	// once this session.
+	private volatile List<MyscapeClient.MagicWardrobeItem> latestMagicWardrobeItems;
+	private volatile List<MyscapeClient.ArmourCaseItem> latestArmourCaseItems;
+	private volatile List<MyscapeClient.FancyDressBoxItem> latestFancyDressBoxItems;
+	private volatile List<MyscapeClient.ToyBoxItem> latestToyBoxItems;
+	// The Costume Room's Treasure Chest and Cape Rack aren't single
+	// ItemContainers, unlike every other source above -- the Treasure
+	// Chest spans six (one per Treasure Trail tier, across two widget
+	// pages) and the Cape Rack spans two (see readTreasureChestItems/
+	// readMagicCapeRackItems below for the exact InventoryIDs). Each
+	// sub-container's own last-known quantities are kept here, keyed by
+	// its own InventoryID, so a change to any one page can be merged
+	// with whatever's already known about the others without losing
+	// them -- only the combined result is ever actually synced (see
+	// latestTreasureChestItems/latestMagicCapeRackItems below).
+	private final Map<Integer, Map<Integer, Integer>> treasureChestPageQuantities = new ConcurrentHashMap<>();
+	private final Map<Integer, Map<Integer, Integer>> magicCapeRackPageQuantities = new ConcurrentHashMap<>();
+	private volatile List<MyscapeClient.TreasureChestItem> latestTreasureChestItems;
+	private volatile List<MyscapeClient.MagicCapeRackItem> latestMagicCapeRackItems;
 	// Same deal, for skills/quests/diaries -- unlike Potion Storage/Rune
 	// Pouch, though, these are never left null for long once logged in:
 	// see onGameTick's justBecameAvailable block, which reads all three
@@ -497,8 +515,15 @@ public class MyscapePlugin extends Plugin
 		latestRunePouchItems = null;
 		latestLootingBagItems = null;
 		latestSeedVaultItems = null;
-		latestMenagerieItems = null;
 		latestTackleBoxItems = null;
+		latestMagicWardrobeItems = null;
+		latestArmourCaseItems = null;
+		latestFancyDressBoxItems = null;
+		latestToyBoxItems = null;
+		latestTreasureChestItems = null;
+		latestMagicCapeRackItems = null;
+		treasureChestPageQuantities.clear();
+		magicCapeRackPageQuantities.clear();
 		latestSkillItems = null;
 		latestCompletedQuestNames = null;
 		latestDiaryTierItems = null;
@@ -629,37 +654,122 @@ public class MyscapePlugin extends Plugin
 		return items;
 	}
 
-	/** The Player-Owned-House Menagerie's pet storage also genuinely is
-	 * an ItemContainer (InventoryID.POH_MENAGERIE_PETS), same as the
-	 * Looting Bag/Seed Vault above -- read the exact same
-	 * straightforward way, only reporting contents once the player has
-	 * actually viewed the Menagerie room at least once this session
-	 * (same caveat as Bank/Looting Bag/Seed Vault). Every pet's own
-	 * quantity is always exactly 1 (see MenagerieItem's docstring
-	 * server-side), but aggregateQuantities handles that with no
-	 * special-casing needed -- two of the same pet variant simply isn't
-	 * a thing that can happen. */
-	private List<MyscapeClient.MenagerieItem> readMenagerieItems(ItemContainer menagerie)
-	{
-		List<MyscapeClient.MenagerieItem> items = new ArrayList<>();
-		for (Map.Entry<Integer, Integer> entry : aggregateQuantities(menagerie).entrySet())
-		{
-			items.add(new MyscapeClient.MenagerieItem(entry.getKey(), resolveItemName(entry.getKey()), entry.getValue()));
-		}
-		return items;
-	}
-
 	/** A Tackle Box also genuinely is an ItemContainer (InventoryID.
-	 * TACKLE_BOX), same as the Looting Bag/Seed Vault/Menagerie above --
-	 * read the exact same straightforward way, only reporting contents
-	 * once the player has actually opened it at least once this session
-	 * (same caveat as Bank/Looting Bag/Seed Vault/Menagerie). */
+	 * TACKLE_BOX), same as the Looting Bag/Seed Vault above -- read the
+	 * exact same straightforward way, only reporting contents once the
+	 * player has actually opened it at least once this session (same
+	 * caveat as Bank/Looting Bag/Seed Vault). */
 	private List<MyscapeClient.TackleBoxItem> readTackleBoxItems(ItemContainer tackleBox)
 	{
 		List<MyscapeClient.TackleBoxItem> items = new ArrayList<>();
 		for (Map.Entry<Integer, Integer> entry : aggregateQuantities(tackleBox).entrySet())
 		{
 			items.add(new MyscapeClient.TackleBoxItem(entry.getKey(), resolveItemName(entry.getKey()), entry.getValue()));
+		}
+		return items;
+	}
+
+	/** The Costume Room's Magic Wardrobe also genuinely is an ItemContainer (InventoryID.POH_COSTUME_ROOM_MAGIC_WARDROBE_INV), same as the Looting Bag/Seed Vault/Tackle Box above -- read the exact same straightforward way, only reporting contents once the player has actually opened it at least once this session (same caveat as Bank/Looting Bag/Seed Vault/Tackle Box). */
+	private List<MyscapeClient.MagicWardrobeItem> readMagicWardrobeItems(ItemContainer magicWardrobe)
+	{
+		List<MyscapeClient.MagicWardrobeItem> items = new ArrayList<>();
+		for (Map.Entry<Integer, Integer> entry : aggregateQuantities(magicWardrobe).entrySet())
+		{
+			items.add(new MyscapeClient.MagicWardrobeItem(entry.getKey(), resolveItemName(entry.getKey()), entry.getValue()));
+		}
+		return items;
+	}
+
+	/** Same deal as readMagicWardrobeItems above, for the Costume Room's Armour Case (InventoryID.POH_COSTUME_ROOM_ARMOUR_INV). */
+	private List<MyscapeClient.ArmourCaseItem> readArmourCaseItems(ItemContainer armourCase)
+	{
+		List<MyscapeClient.ArmourCaseItem> items = new ArrayList<>();
+		for (Map.Entry<Integer, Integer> entry : aggregateQuantities(armourCase).entrySet())
+		{
+			items.add(new MyscapeClient.ArmourCaseItem(entry.getKey(), resolveItemName(entry.getKey()), entry.getValue()));
+		}
+		return items;
+	}
+
+	/** Same deal as readMagicWardrobeItems above, for the Costume Room's Fancy Dress Box (InventoryID.POH_COSTUME_ROOM_AME_INV -- Jagex's own internal name for this container; it's the Fancy Dress Box in-game). */
+	private List<MyscapeClient.FancyDressBoxItem> readFancyDressBoxItems(ItemContainer fancyDressBox)
+	{
+		List<MyscapeClient.FancyDressBoxItem> items = new ArrayList<>();
+		for (Map.Entry<Integer, Integer> entry : aggregateQuantities(fancyDressBox).entrySet())
+		{
+			items.add(new MyscapeClient.FancyDressBoxItem(entry.getKey(), resolveItemName(entry.getKey()), entry.getValue()));
+		}
+		return items;
+	}
+
+	/** Same deal as readMagicWardrobeItems above, for the Costume Room's Toy Box (InventoryID.POH_COSTUME_ROOM_HOLIDAY_ITEMS_INV). */
+	private List<MyscapeClient.ToyBoxItem> readToyBoxItems(ItemContainer toyBox)
+	{
+		List<MyscapeClient.ToyBoxItem> items = new ArrayList<>();
+		for (Map.Entry<Integer, Integer> entry : aggregateQuantities(toyBox).entrySet())
+		{
+			items.add(new MyscapeClient.ToyBoxItem(entry.getKey(), resolveItemName(entry.getKey()), entry.getValue()));
+		}
+		return items;
+	}
+
+
+
+	/** The Costume Room's Treasure Chest isn't one ItemContainer, unlike
+	 * every source above -- Jagex splits it into six, one per Treasure
+	 * Trail difficulty tier, across two widget pages
+	 * (InventoryID.POH_COSTUME_ROOM_TREASURE_TRAIL_1_INV through
+	 * _3_INV for page one, _1A_INV through _3A_INV for page two). Each
+	 * call here is for exactly one of those six (see the merged
+	 * onItemContainerChanged branch below), so this stashes that page's
+	 * own quantities in treasureChestPageQuantities and returns the
+	 * combined total across every page seen so far this session --
+	 * same "not populated until opened" caveat as every other source
+	 * above, just per tier: a tier's items aren't included until that
+	 * tier's own tab has actually been opened at least once. */
+	private List<MyscapeClient.TreasureChestItem> readTreasureChestItems(int containerId, ItemContainer page)
+	{
+		treasureChestPageQuantities.put(containerId, aggregateQuantities(page));
+
+		Map<Integer, Integer> merged = new LinkedHashMap<>();
+		for (Map<Integer, Integer> pageQuantities : treasureChestPageQuantities.values())
+		{
+			for (Map.Entry<Integer, Integer> entry : pageQuantities.entrySet())
+			{
+				merged.merge(entry.getKey(), entry.getValue(), Integer::sum);
+			}
+		}
+
+		List<MyscapeClient.TreasureChestItem> items = new ArrayList<>();
+		for (Map.Entry<Integer, Integer> entry : merged.entrySet())
+		{
+			items.add(new MyscapeClient.TreasureChestItem(entry.getKey(), resolveItemName(entry.getKey()), entry.getValue()));
+		}
+		return items;
+	}
+
+	/** Same deal as readTreasureChestItems above, for the Costume
+	 * Room's Cape Rack -- also split across widget pages, just two
+	 * instead of six (InventoryID.POH_COSTUME_ROOM_CAPES_INV and
+	 * _CAPES_INV_PAGE2), merged into magicCapeRackPageQuantities the
+	 * same way. */
+	private List<MyscapeClient.MagicCapeRackItem> readMagicCapeRackItems(int containerId, ItemContainer page)
+	{
+		magicCapeRackPageQuantities.put(containerId, aggregateQuantities(page));
+
+		Map<Integer, Integer> merged = new LinkedHashMap<>();
+		for (Map<Integer, Integer> pageQuantities : magicCapeRackPageQuantities.values())
+		{
+			for (Map.Entry<Integer, Integer> entry : pageQuantities.entrySet())
+			{
+				merged.merge(entry.getKey(), entry.getValue(), Integer::sum);
+			}
+		}
+
+		List<MyscapeClient.MagicCapeRackItem> items = new ArrayList<>();
+		for (Map.Entry<Integer, Integer> entry : merged.entrySet())
+		{
+			items.add(new MyscapeClient.MagicCapeRackItem(entry.getKey(), resolveItemName(entry.getKey()), entry.getValue()));
 		}
 		return items;
 	}
@@ -1021,13 +1131,39 @@ public class MyscapePlugin extends Plugin
 		{
 			latestSeedVaultItems = readSeedVaultItems(container);
 		}
-		else if (containerId == InventoryID.POH_MENAGERIE_PETS)
-		{
-			latestMenagerieItems = readMenagerieItems(container);
-		}
 		else if (containerId == InventoryID.TACKLE_BOX)
 		{
 			latestTackleBoxItems = readTackleBoxItems(container);
+		}
+		else if (containerId == InventoryID.POH_COSTUME_ROOM_MAGIC_WARDROBE_INV)
+		{
+			latestMagicWardrobeItems = readMagicWardrobeItems(container);
+		}
+		else if (containerId == InventoryID.POH_COSTUME_ROOM_ARMOUR_INV)
+		{
+			latestArmourCaseItems = readArmourCaseItems(container);
+		}
+		else if (containerId == InventoryID.POH_COSTUME_ROOM_AME_INV)
+		{
+			latestFancyDressBoxItems = readFancyDressBoxItems(container);
+		}
+		else if (containerId == InventoryID.POH_COSTUME_ROOM_HOLIDAY_ITEMS_INV)
+		{
+			latestToyBoxItems = readToyBoxItems(container);
+		}
+		else if (containerId == InventoryID.POH_COSTUME_ROOM_TREASURE_TRAIL_1_INV
+			|| containerId == InventoryID.POH_COSTUME_ROOM_TREASURE_TRAIL_2_INV
+			|| containerId == InventoryID.POH_COSTUME_ROOM_TREASURE_TRAIL_3_INV
+			|| containerId == InventoryID.POH_COSTUME_ROOM_TREASURE_TRAIL_1A_INV
+			|| containerId == InventoryID.POH_COSTUME_ROOM_TREASURE_TRAIL_2A_INV
+			|| containerId == InventoryID.POH_COSTUME_ROOM_TREASURE_TRAIL_3A_INV)
+		{
+			latestTreasureChestItems = readTreasureChestItems(containerId, container);
+		}
+		else if (containerId == InventoryID.POH_COSTUME_ROOM_CAPES_INV
+			|| containerId == InventoryID.POH_COSTUME_ROOM_CAPES_INV_PAGE2)
+		{
+			latestMagicCapeRackItems = readMagicCapeRackItems(containerId, container);
 		}
 		else
 		{
@@ -1241,8 +1377,8 @@ public class MyscapePlugin extends Plugin
 
 	/** (Re)schedules the single shared debounce task -- shared across
 	 * bank/inventory/equipment/potion storage/rune pouch/looting bag/
-	 * seed vault/menagerie/tackle box/skills/quests/diaries rather than
-	 * one per source, since
+	 * seed vault/tackle box/the six Costume Room storages/skills/
+	 * quests/diaries rather than one per source, since
 	 * a player actively shopping or grinding typically touches more
 	 * than one of them in the same burst (withdrawing from the bank,
 	 * then equipping what they withdrew; training a skill while also
@@ -1285,7 +1421,9 @@ public class MyscapePlugin extends Plugin
 					panel.syncInBackground(
 						latestBankItems, latestInventoryItems, latestEquipmentItems,
 						latestPotionStorageItems, latestRunePouchItems, latestLootingBagItems,
-						latestSeedVaultItems, latestMenagerieItems, latestTackleBoxItems,
+						latestSeedVaultItems, latestTackleBoxItems,
+						latestMagicWardrobeItems, latestArmourCaseItems, latestFancyDressBoxItems,
+						latestToyBoxItems, latestTreasureChestItems, latestMagicCapeRackItems,
 						latestSkillItems, latestCompletedQuestNames, latestDiaryTierItems);
 				}
 			},

@@ -56,10 +56,12 @@ class MyscapePanel extends PluginPanel
 	// SyncStatusOut's docstring in the Mootrius/myscape repo's
 	// app/schemas.py), which is also what GET /api/players/me/sync-status
 	// (fetchSyncStatus below) reports back keyed by. More storages will
-	// likely join this list later -- nothing here assumes exactly seven.
+	// likely join this list later -- nothing here assumes exactly
+	// fourteen.
 	private static final String[] STATUS_STORAGE_KEYS = {
 		"bank", "equipment", "inventory", "potion_storage", "seed_vault", "rune_pouch", "looting_bag",
-		"menagerie", "tackle_box",
+		"tackle_box", "magic_wardrobe", "armour_case", "fancy_dress_box", "toy_box", "treasure_chest",
+		"magic_cape_rack",
 	};
 	private static final Map<String, String> STATUS_STORAGE_LABELS = buildStatusStorageLabels();
 
@@ -73,8 +75,13 @@ class MyscapePanel extends PluginPanel
 		labels.put("seed_vault", "Seed Vault");
 		labels.put("rune_pouch", "Rune Pouch");
 		labels.put("looting_bag", "Looting Bag");
-		labels.put("menagerie", "Menagerie");
 		labels.put("tackle_box", "Tackle Box");
+		labels.put("magic_wardrobe", "Magic Wardrobe");
+		labels.put("armour_case", "Armour Case");
+		labels.put("fancy_dress_box", "Fancy Dress Box");
+		labels.put("toy_box", "Toy Box");
+		labels.put("treasure_chest", "Treasure Chest");
+		labels.put("magic_cape_rack", "Magic Cape Rack");
 		return Collections.unmodifiableMap(labels);
 	}
 
@@ -126,8 +133,13 @@ class MyscapePanel extends PluginPanel
 	private Integer lastRunePouchItemCount;
 	private Integer lastLootingBagItemCount;
 	private Integer lastSeedVaultItemCount;
-	private Integer lastMenagerieItemCount;
 	private Integer lastTackleBoxItemCount;
+	private Integer lastMagicWardrobeItemCount;
+	private Integer lastArmourCaseItemCount;
+	private Integer lastFancyDressBoxItemCount;
+	private Integer lastToyBoxItemCount;
+	private Integer lastTreasureChestItemCount;
+	private Integer lastMagicCapeRackItemCount;
 	// Same deal, for skills/completed quests/diary tiers -- the size of
 	// the most recently confirmed snapshot for each, same reasoning as
 	// the five item-source counts above (and reset alongside them in
@@ -366,8 +378,13 @@ class MyscapePanel extends PluginPanel
 		lastRunePouchItemCount = null;
 		lastLootingBagItemCount = null;
 		lastSeedVaultItemCount = null;
-		lastMenagerieItemCount = null;
 		lastTackleBoxItemCount = null;
+		lastMagicWardrobeItemCount = null;
+		lastArmourCaseItemCount = null;
+		lastFancyDressBoxItemCount = null;
+		lastToyBoxItemCount = null;
+		lastTreasureChestItemCount = null;
+		lastMagicCapeRackItemCount = null;
 		lastLootEventCount = null;
 		lastSkillCount = null;
 		lastQuestCount = null;
@@ -462,8 +479,9 @@ class MyscapePanel extends PluginPanel
 
 	/** Called by the plugin (see MyscapePlugin#scheduleSyncDebounced),
 	 * off the EDT, once bank/inventory/equipment/potion storage/rune
-	 * pouch/looting bag/seed vault/menagerie/tackle box/skills/quests/
-	 * diaries have settled after a change -- syncs whichever of these
+	 * pouch/looting bag/seed vault/tackle box/the six Costume Room
+	 * storages/skills/quests/diaries have settled after a change --
+	 * syncs whichever of these
 	 * have actually been observed this session (any
 	 * argument may be null; see the field docs on MyscapePlugin's
 	 * latest*Items/latestSkillItems/latestCompletedQuestNames/
@@ -485,8 +503,13 @@ class MyscapePanel extends PluginPanel
 		List<MyscapeClient.RunePouchItem> runePouchItems,
 		List<MyscapeClient.LootingBagItem> lootingBagItems,
 		List<MyscapeClient.SeedVaultItem> seedVaultItems,
-		List<MyscapeClient.MenagerieItem> menagerieItems,
 		List<MyscapeClient.TackleBoxItem> tackleBoxItems,
+		List<MyscapeClient.MagicWardrobeItem> magicWardrobeItems,
+		List<MyscapeClient.ArmourCaseItem> armourCaseItems,
+		List<MyscapeClient.FancyDressBoxItem> fancyDressBoxItems,
+		List<MyscapeClient.ToyBoxItem> toyBoxItems,
+		List<MyscapeClient.TreasureChestItem> treasureChestItems,
+		List<MyscapeClient.MagicCapeRackItem> magicCapeRackItems,
 		List<MyscapeClient.SkillItem> skillItems,
 		List<String> completedQuestNames,
 		List<MyscapeClient.DiaryTierItem> diaryTierItems)
@@ -519,13 +542,33 @@ class MyscapePanel extends PluginPanel
 		{
 			client.syncSeedVault(seedVaultItems, syncCallback("seed_vault", count -> lastSeedVaultItemCount = count));
 		}
-		if (menagerieItems != null)
-		{
-			client.syncMenagerie(menagerieItems, syncCallback("menagerie", count -> lastMenagerieItemCount = count));
-		}
 		if (tackleBoxItems != null)
 		{
 			client.syncTackleBox(tackleBoxItems, syncCallback("tackle_box", count -> lastTackleBoxItemCount = count));
+		}
+		if (magicWardrobeItems != null)
+		{
+			client.syncMagicWardrobe(magicWardrobeItems, syncCallback("magic_wardrobe", count -> lastMagicWardrobeItemCount = count));
+		}
+		if (armourCaseItems != null)
+		{
+			client.syncArmourCase(armourCaseItems, syncCallback("armour_case", count -> lastArmourCaseItemCount = count));
+		}
+		if (fancyDressBoxItems != null)
+		{
+			client.syncFancyDressBox(fancyDressBoxItems, syncCallback("fancy_dress_box", count -> lastFancyDressBoxItemCount = count));
+		}
+		if (toyBoxItems != null)
+		{
+			client.syncToyBox(toyBoxItems, syncCallback("toy_box", count -> lastToyBoxItemCount = count));
+		}
+		if (treasureChestItems != null)
+		{
+			client.syncTreasureChest(treasureChestItems, syncCallback("treasure_chest", count -> lastTreasureChestItemCount = count));
+		}
+		if (magicCapeRackItems != null)
+		{
+			client.syncMagicCapeRack(magicCapeRackItems, syncCallback("magic_cape_rack", count -> lastMagicCapeRackItemCount = count));
 		}
 		if (skillItems != null)
 		{
@@ -766,13 +809,33 @@ class MyscapePanel extends PluginPanel
 		{
 			parts.add(lastSeedVaultItemCount + " seed vault");
 		}
-		if (lastMenagerieItemCount != null)
-		{
-			parts.add(lastMenagerieItemCount + " menagerie");
-		}
 		if (lastTackleBoxItemCount != null)
 		{
 			parts.add(lastTackleBoxItemCount + " tackle box");
+		}
+		if (lastMagicWardrobeItemCount != null)
+		{
+			parts.add(lastMagicWardrobeItemCount + " magic wardrobe");
+		}
+		if (lastArmourCaseItemCount != null)
+		{
+			parts.add(lastArmourCaseItemCount + " armour case");
+		}
+		if (lastFancyDressBoxItemCount != null)
+		{
+			parts.add(lastFancyDressBoxItemCount + " fancy dress box");
+		}
+		if (lastToyBoxItemCount != null)
+		{
+			parts.add(lastToyBoxItemCount + " toy box");
+		}
+		if (lastTreasureChestItemCount != null)
+		{
+			parts.add(lastTreasureChestItemCount + " treasure chest");
+		}
+		if (lastMagicCapeRackItemCount != null)
+		{
+			parts.add(lastMagicCapeRackItemCount + " magic cape rack");
 		}
 		if (lastSkillCount != null)
 		{
