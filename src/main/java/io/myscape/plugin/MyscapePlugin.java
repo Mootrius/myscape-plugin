@@ -198,6 +198,27 @@ public class MyscapePlugin extends Plugin
 	private static final int POTION_STORAGE_VARP_MIN = 4272;
 	private static final int POTION_STORAGE_VARP_MAX = 4277;
 
+	// RuneLite's OWN Bank Tags Potion Storage tab doesn't actually stop
+	// at that fixed six-varp range either -- alongside those base vars
+	// it also watches a SET of additional var ids it reads fresh off
+	// the Potion Storage widget itself every client tick
+	// (w.getVarTransmitTrigger(), in its own PotionStorage.java), which
+	// is how potions added to the feature after its original six-var
+	// design (Divine potions among them) end up covered too -- their
+	// dose counts apparently live outside POTION_STORAGE_VARP_MIN..MAX,
+	// so depositing/withdrawing them alone never sets
+	// potionStorageDirty and this plugin's own snapshot for them goes
+	// stale until some unrelated (base-var) potion change happens to
+	// force a full re-read. There's no ItemContainer or other widget
+	// this plugin can reliably pull that same dynamic list from outside
+	// of the Bank Tags UI actually being open, so rather than guess at
+	// (and eventually go stale against again) more hardcoded ids, this
+	// falls back to periodically re-reading Potion Storage outright --
+	// see ticksSincePotionStorageRefresh below -- so a dose change on a
+	// var this plugin doesn't know to watch still shows up within a
+	// bounded time instead of sitting stale indefinitely.
+	private static final int POTION_STORAGE_REFRESH_INTERVAL_TICKS = 50;
+
 	// A Rune Pouch (regular or Divine, including their League/seasonal
 	// "Trouver parcel" cosmetic reclaims -- BH_RUNE_POUCH_TROUVER and
 	// DIVINE_RUNE_POUCH_TROUVER) is a single inventory item, not an
@@ -1017,6 +1038,14 @@ public class MyscapePlugin extends Plugin
 	// so this needs no synchronization of its own.
 	private boolean potionStorageDirty;
 
+	// How many ticks it's been since Potion Storage was last actually
+	// re-read (by either path -- the dirty flag above or this counter
+	// hitting its own interval), reset to 0 by both. Only ever touched
+	// from onGameTick, on the client thread, same as potionStorageDirty.
+	// See POTION_STORAGE_REFRESH_INTERVAL_TICKS's own comment for why
+	// this periodic fallback exists at all.
+	private int ticksSincePotionStorageRefresh;
+
 	// Same deal, for a Rune Pouch's contents -- also set directly from
 	// onItemContainerChanged above (see its comment) when the pouch's
 	// own presence in the inventory could have changed, not just when
@@ -1210,14 +1239,17 @@ public class MyscapePlugin extends Plugin
 				currentRuneScapeName = client.getLocalPlayer().getName();
 			}
 
-			// Potion Storage's own varps fired since the last tick (see
-			// onVarbitChanged above) -- read its current contents now,
-			// on the client thread, one tick later rather than inline in
-			// that event handler (see potionStorageDirty's field doc for
-			// why the deferral).
-			if (potionStorageDirty)
+			// Either Potion Storage's own (tracked) varps fired since the
+			// last tick (see onVarbitChanged above -- read one tick later
+			// rather than inline there, per potionStorageDirty's field
+			// doc) or the periodic fallback interval has elapsed (see
+			// POTION_STORAGE_REFRESH_INTERVAL_TICKS's own doc for why
+			// that exists) -- either way, read Potion Storage's current
+			// contents now, on the client thread.
+			if (potionStorageDirty || ++ticksSincePotionStorageRefresh >= POTION_STORAGE_REFRESH_INTERVAL_TICKS)
 			{
 				potionStorageDirty = false;
+				ticksSincePotionStorageRefresh = 0;
 				latestPotionStorageItems = readPotionStorageItems();
 				scheduleSyncDebounced();
 			}
@@ -1295,6 +1327,21 @@ public class MyscapePlugin extends Plugin
 				{
 					latestEquipmentItems = readEquipmentItems(equipment);
 				}
+				// Potion Storage has no login-time freebie the way
+				// inventory/equipment do (nothing hands back its
+				// contents just because the player logged in) -- but it
+				// has the opposite problem left unhandled before: with
+				// no ItemContainer of its own, the ONLY thing that ever
+				// triggered a read was potionStorageDirty, so a session
+				// that never happened to touch a tracked base-var potion
+				// left it unread for the whole session. Reading it once
+				// here guarantees every session starts with a real
+				// snapshot regardless of what does or doesn't get
+				// deposited/withdrawn afterward; the periodic fallback
+				// (see POTION_STORAGE_REFRESH_INTERVAL_TICKS) keeps it
+				// honest from here on.
+				latestPotionStorageItems = readPotionStorageItems();
+				ticksSincePotionStorageRefresh = 0;
 				// Same reasoning as inventory/equipment just above: a Rune
 				// Pouch stocked before this plugin ever loaded (or before
 				// this login) has no "change" event left to fire for
