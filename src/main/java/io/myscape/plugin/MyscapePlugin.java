@@ -406,6 +406,11 @@ public class MyscapePlugin extends Plugin
 	// is -- null until the player has actually opened it at least once
 	// this session, same caveat as Bank.
 	private volatile List<MyscapeClient.LootingBagItem> latestLootingBagItems;
+	// Same deal again, for the Seed Vault's contents -- also a genuine
+	// ItemContainer (InventoryID.SEED_VAULT), read and gated the same
+	// way as the Looting Bag just above: null until the player has
+	// actually opened it at least once this session.
+	private volatile List<MyscapeClient.SeedVaultItem> latestSeedVaultItems;
 	// Same deal, for skills/quests/diaries -- unlike Potion Storage/Rune
 	// Pouch, though, these are never left null for long once logged in:
 	// see onGameTick's justBecameAvailable block, which reads all three
@@ -480,6 +485,7 @@ public class MyscapePlugin extends Plugin
 		latestPotionStorageItems = null;
 		latestRunePouchItems = null;
 		latestLootingBagItems = null;
+		latestSeedVaultItems = null;
 		latestSkillItems = null;
 		latestCompletedQuestNames = null;
 		latestDiaryTierItems = null;
@@ -591,6 +597,21 @@ public class MyscapePlugin extends Plugin
 		for (Map.Entry<Integer, Integer> entry : aggregateQuantities(lootingBag).entrySet())
 		{
 			items.add(new MyscapeClient.LootingBagItem(entry.getKey(), resolveItemName(entry.getKey()), entry.getValue()));
+		}
+		return items;
+	}
+
+	/** The Farming Guild Seed Vault also genuinely is an ItemContainer
+	 * (InventoryID.SEED_VAULT), same as the Looting Bag just above --
+	 * read the exact same straightforward way, only reporting contents
+	 * once the player has actually opened it at least once this
+	 * session (same caveat as Bank/Looting Bag). */
+	private List<MyscapeClient.SeedVaultItem> readSeedVaultItems(ItemContainer seedVault)
+	{
+		List<MyscapeClient.SeedVaultItem> items = new ArrayList<>();
+		for (Map.Entry<Integer, Integer> entry : aggregateQuantities(seedVault).entrySet())
+		{
+			items.add(new MyscapeClient.SeedVaultItem(entry.getKey(), resolveItemName(entry.getKey()), entry.getValue()));
 		}
 		return items;
 	}
@@ -948,6 +969,10 @@ public class MyscapePlugin extends Plugin
 		{
 			latestLootingBagItems = readLootingBagItems(container);
 		}
+		else if (containerId == InventoryID.SEED_VAULT)
+		{
+			latestSeedVaultItems = readSeedVaultItems(container);
+		}
 		else
 		{
 			return;
@@ -1159,11 +1184,12 @@ public class MyscapePlugin extends Plugin
 	}
 
 	/** (Re)schedules the single shared debounce task -- shared across
-	 * bank/inventory/equipment/potion storage/rune pouch/skills/quests/
-	 * diaries rather than one per source, since a player actively
-	 * shopping or grinding typically touches more than one of them in
-	 * the same burst (withdrawing from the bank, then equipping what
-	 * they withdrew; training a skill while also banking its product),
+	 * bank/inventory/equipment/potion storage/rune pouch/looting bag/
+	 * seed vault/skills/quests/diaries rather than one per source, since
+	 * a player actively shopping or grinding typically touches more
+	 * than one of them in the same burst (withdrawing from the bank,
+	 * then equipping what they withdrew; training a skill while also
+	 * banking its product),
 	 * and there's no reason to send several separate requests a couple
 	 * of ticks apart for what's really one burst of activity. When it
 	 * fires, it syncs whichever of these have actually been observed at
@@ -1202,6 +1228,7 @@ public class MyscapePlugin extends Plugin
 					panel.syncInBackground(
 						latestBankItems, latestInventoryItems, latestEquipmentItems,
 						latestPotionStorageItems, latestRunePouchItems, latestLootingBagItems,
+						latestSeedVaultItems,
 						latestSkillItems, latestCompletedQuestNames, latestDiaryTierItems);
 				}
 			},

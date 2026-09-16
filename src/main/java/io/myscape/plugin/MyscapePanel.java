@@ -122,6 +122,7 @@ class MyscapePanel extends PluginPanel
 	private Integer lastPotionStorageItemCount;
 	private Integer lastRunePouchItemCount;
 	private Integer lastLootingBagItemCount;
+	private Integer lastSeedVaultItemCount;
 	// Same deal, for skills/completed quests/diary tiers -- the size of
 	// the most recently confirmed snapshot for each, same reasoning as
 	// the five item-source counts above (and reset alongside them in
@@ -359,6 +360,7 @@ class MyscapePanel extends PluginPanel
 		lastPotionStorageItemCount = null;
 		lastRunePouchItemCount = null;
 		lastLootingBagItemCount = null;
+		lastSeedVaultItemCount = null;
 		lastLootEventCount = null;
 		lastSkillCount = null;
 		lastQuestCount = null;
@@ -453,8 +455,9 @@ class MyscapePanel extends PluginPanel
 
 	/** Called by the plugin (see MyscapePlugin#scheduleSyncDebounced),
 	 * off the EDT, once bank/inventory/equipment/potion storage/rune
-	 * pouch/skills/quests/diaries have settled after a change -- syncs
-	 * whichever of these have actually been observed this session (any
+	 * pouch/looting bag/seed vault/skills/quests/diaries have settled
+	 * after a change -- syncs whichever of these have actually been
+	 * observed this session (any
 	 * argument may be null; see the field docs on MyscapePlugin's
 	 * latest*Items/latestSkillItems/latestCompletedQuestNames/
 	 * latestDiaryTierItems fields) and, on each success, updates the
@@ -474,6 +477,7 @@ class MyscapePanel extends PluginPanel
 		List<MyscapeClient.PotionStorageItem> potionStorageItems,
 		List<MyscapeClient.RunePouchItem> runePouchItems,
 		List<MyscapeClient.LootingBagItem> lootingBagItems,
+		List<MyscapeClient.SeedVaultItem> seedVaultItems,
 		List<MyscapeClient.SkillItem> skillItems,
 		List<String> completedQuestNames,
 		List<MyscapeClient.DiaryTierItem> diaryTierItems)
@@ -501,6 +505,10 @@ class MyscapePanel extends PluginPanel
 		if (lootingBagItems != null)
 		{
 			client.syncLootingBag(lootingBagItems, syncCallback("looting_bag", count -> lastLootingBagItemCount = count));
+		}
+		if (seedVaultItems != null)
+		{
+			client.syncSeedVault(seedVaultItems, syncCallback("seed_vault", count -> lastSeedVaultItemCount = count));
 		}
 		if (skillItems != null)
 		{
@@ -736,6 +744,10 @@ class MyscapePanel extends PluginPanel
 		if (lastLootingBagItemCount != null)
 		{
 			parts.add(lastLootingBagItemCount + " looting bag");
+		}
+		if (lastSeedVaultItemCount != null)
+		{
+			parts.add(lastSeedVaultItemCount + " seed vault");
 		}
 		if (lastSkillCount != null)
 		{

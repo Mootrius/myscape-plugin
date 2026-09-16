@@ -183,6 +183,28 @@ class MyscapeClient
 		}
 	}
 
+	/** Same shape as BankItem/InventoryItem/LootingBagItem again, for
+	 * the Farming Guild Seed Vault's contents -- see SeedVaultItem in
+	 * the Mootrius/myscape repo's app/models.py for the server side, and
+	 * MyscapePlugin#readSeedVaultItems for how this is actually built.
+	 * Same deal as Looting Bag above: a genuine ItemContainer
+	 * (InventoryID.SEED_VAULT), read the same straightforward way, only
+	 * reporting contents once the player has actually opened it at
+	 * least once this session (same caveat as Bank/Looting Bag). */
+	static final class SeedVaultItem
+	{
+		final int itemId;
+		final String itemName;
+		final int quantity;
+
+		SeedVaultItem(int itemId, String itemName, int quantity)
+		{
+			this.itemId = itemId;
+			this.itemName = itemName;
+			this.quantity = quantity;
+		}
+	}
+
 	/** One skill's current level+xp -- see Player.skills' docstring in
 	 * the Mootrius/myscape repo's app/models.py for the server side, and
 	 * MyscapePlugin#readSkills for how this is actually built. `skill`
@@ -609,6 +631,22 @@ class MyscapeClient
 		syncItems("/api/players/me/looting-bag", itemsJson, callback);
 	}
 
+	/** Same deal as syncBank, for the Seed Vault's contents (POST
+	 * /api/players/me/seed-vault). */
+	void syncSeedVault(List<SeedVaultItem> items, SyncCallback callback)
+	{
+		JsonArray itemsJson = new JsonArray();
+		for (SeedVaultItem item : items)
+		{
+			JsonObject itemJson = new JsonObject();
+			itemJson.addProperty("item_id", item.itemId);
+			itemJson.addProperty("item_name", item.itemName);
+			itemJson.addProperty("quantity", item.quantity);
+			itemsJson.add(itemJson);
+		}
+		syncItems("/api/players/me/seed-vault", itemsJson, callback);
+	}
+
 	/** Polls GET /api/players/me/sync-status (see app/main.py in the
 	 * Mootrius/myscape repo) -- what the side panel's Status section
 	 * actually shows (see MyscapePanel's Status card). Deliberately its
@@ -829,11 +867,12 @@ class MyscapeClient
 		});
 	}
 
-	/** Shared by syncBank/syncInventory/syncEquipment/syncPotionStorage/
-	 * syncRunePouch -- all five POST an {"items": [...]} body to their
-	 * own path and get back the same {"item_count": N} response, so
-	 * this just wraps the general syncPayload below with that one fixed
-	 * field name. */
+	/** Shared by every "current state" container sync above (syncBank,
+	 * syncInventory, syncEquipment, syncPotionStorage, syncRunePouch,
+	 * syncLootingBag, syncSeedVault, ...) -- each POSTs an
+	 * {"items": [...]} body to its own path and gets back the same
+	 * {"item_count": N} response, so this just wraps the general
+	 * syncPayload below with that one fixed field name. */
 	private void syncItems(String path, JsonArray itemsJson, SyncCallback callback)
 	{
 		JsonObject body = new JsonObject();
