@@ -205,6 +205,51 @@ class MyscapeClient
 		}
 	}
 
+	/** Same shape as BankItem/InventoryItem/LootingBagItem/SeedVaultItem
+	 * again, for the Player-Owned-House Menagerie's stored pets -- see
+	 * MenagerieItem in the Mootrius/myscape repo's app/models.py for the
+	 * server side, and MyscapePlugin#readMenagerieItems for how this is
+	 * actually built. Same deal as Looting Bag/Seed Vault above: a
+	 * genuine ItemContainer (InventoryID.POH_MENAGERIE_PETS), read the
+	 * same straightforward way, only reporting contents once the player
+	 * has actually viewed the Menagerie room at least once this session
+	 * (same caveat as Bank/Looting Bag/Seed Vault). */
+	static final class MenagerieItem
+	{
+		final int itemId;
+		final String itemName;
+		final int quantity;
+
+		MenagerieItem(int itemId, String itemName, int quantity)
+		{
+			this.itemId = itemId;
+			this.itemName = itemName;
+			this.quantity = quantity;
+		}
+	}
+
+	/** Same shape again, for a Tackle Box's contents -- see
+	 * TackleBoxItem in the Mootrius/myscape repo's app/models.py for the
+	 * server side, and MyscapePlugin#readTackleBoxItems for how this is
+	 * actually built. Same deal as Looting Bag/Seed Vault/Menagerie
+	 * above: a genuine ItemContainer (InventoryID.TACKLE_BOX), read the
+	 * same straightforward way, only reporting contents once the player
+	 * has actually opened it at least once this session (same caveat as
+	 * Bank/Looting Bag/Seed Vault/Menagerie). */
+	static final class TackleBoxItem
+	{
+		final int itemId;
+		final String itemName;
+		final int quantity;
+
+		TackleBoxItem(int itemId, String itemName, int quantity)
+		{
+			this.itemId = itemId;
+			this.itemName = itemName;
+			this.quantity = quantity;
+		}
+	}
+
 	/** One skill's current level+xp -- see Player.skills' docstring in
 	 * the Mootrius/myscape repo's app/models.py for the server side, and
 	 * MyscapePlugin#readSkills for how this is actually built. `skill`
@@ -647,6 +692,38 @@ class MyscapeClient
 		syncItems("/api/players/me/seed-vault", itemsJson, callback);
 	}
 
+	/** Same deal as syncBank, for the Menagerie's stored pets (POST
+	 * /api/players/me/menagerie). */
+	void syncMenagerie(List<MenagerieItem> items, SyncCallback callback)
+	{
+		JsonArray itemsJson = new JsonArray();
+		for (MenagerieItem item : items)
+		{
+			JsonObject itemJson = new JsonObject();
+			itemJson.addProperty("item_id", item.itemId);
+			itemJson.addProperty("item_name", item.itemName);
+			itemJson.addProperty("quantity", item.quantity);
+			itemsJson.add(itemJson);
+		}
+		syncItems("/api/players/me/menagerie", itemsJson, callback);
+	}
+
+	/** Same deal as syncBank, for a Tackle Box's contents (POST
+	 * /api/players/me/tackle-box). */
+	void syncTackleBox(List<TackleBoxItem> items, SyncCallback callback)
+	{
+		JsonArray itemsJson = new JsonArray();
+		for (TackleBoxItem item : items)
+		{
+			JsonObject itemJson = new JsonObject();
+			itemJson.addProperty("item_id", item.itemId);
+			itemJson.addProperty("item_name", item.itemName);
+			itemJson.addProperty("quantity", item.quantity);
+			itemsJson.add(itemJson);
+		}
+		syncItems("/api/players/me/tackle-box", itemsJson, callback);
+	}
+
 	/** Polls GET /api/players/me/sync-status (see app/main.py in the
 	 * Mootrius/myscape repo) -- what the side panel's Status section
 	 * actually shows (see MyscapePanel's Status card). Deliberately its
@@ -869,10 +946,10 @@ class MyscapeClient
 
 	/** Shared by every "current state" container sync above (syncBank,
 	 * syncInventory, syncEquipment, syncPotionStorage, syncRunePouch,
-	 * syncLootingBag, syncSeedVault, ...) -- each POSTs an
-	 * {"items": [...]} body to its own path and gets back the same
-	 * {"item_count": N} response, so this just wraps the general
-	 * syncPayload below with that one fixed field name. */
+	 * syncLootingBag, syncSeedVault, syncMenagerie, syncTackleBox, ...)
+	 * -- each POSTs an {"items": [...]} body to its own path and gets
+	 * back the same {"item_count": N} response, so this just wraps the
+	 * general syncPayload below with that one fixed field name. */
 	private void syncItems(String path, JsonArray itemsJson, SyncCallback callback)
 	{
 		JsonObject body = new JsonObject();

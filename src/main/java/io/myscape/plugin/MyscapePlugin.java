@@ -411,6 +411,17 @@ public class MyscapePlugin extends Plugin
 	// way as the Looting Bag just above: null until the player has
 	// actually opened it at least once this session.
 	private volatile List<MyscapeClient.SeedVaultItem> latestSeedVaultItems;
+	// Same deal again, for the Menagerie's stored pets -- also a
+	// genuine ItemContainer (InventoryID.POH_MENAGERIE_PETS), read and
+	// gated the same way as Looting Bag/Seed Vault above: null until
+	// the player has actually viewed the Menagerie room at least once
+	// this session.
+	private volatile List<MyscapeClient.MenagerieItem> latestMenagerieItems;
+	// Same deal again, for a Tackle Box's contents -- also a genuine
+	// ItemContainer (InventoryID.TACKLE_BOX), read and gated the same
+	// way as Looting Bag/Seed Vault/Menagerie above: null until the
+	// player has actually opened it at least once this session.
+	private volatile List<MyscapeClient.TackleBoxItem> latestTackleBoxItems;
 	// Same deal, for skills/quests/diaries -- unlike Potion Storage/Rune
 	// Pouch, though, these are never left null for long once logged in:
 	// see onGameTick's justBecameAvailable block, which reads all three
@@ -486,6 +497,8 @@ public class MyscapePlugin extends Plugin
 		latestRunePouchItems = null;
 		latestLootingBagItems = null;
 		latestSeedVaultItems = null;
+		latestMenagerieItems = null;
+		latestTackleBoxItems = null;
 		latestSkillItems = null;
 		latestCompletedQuestNames = null;
 		latestDiaryTierItems = null;
@@ -612,6 +625,41 @@ public class MyscapePlugin extends Plugin
 		for (Map.Entry<Integer, Integer> entry : aggregateQuantities(seedVault).entrySet())
 		{
 			items.add(new MyscapeClient.SeedVaultItem(entry.getKey(), resolveItemName(entry.getKey()), entry.getValue()));
+		}
+		return items;
+	}
+
+	/** The Player-Owned-House Menagerie's pet storage also genuinely is
+	 * an ItemContainer (InventoryID.POH_MENAGERIE_PETS), same as the
+	 * Looting Bag/Seed Vault above -- read the exact same
+	 * straightforward way, only reporting contents once the player has
+	 * actually viewed the Menagerie room at least once this session
+	 * (same caveat as Bank/Looting Bag/Seed Vault). Every pet's own
+	 * quantity is always exactly 1 (see MenagerieItem's docstring
+	 * server-side), but aggregateQuantities handles that with no
+	 * special-casing needed -- two of the same pet variant simply isn't
+	 * a thing that can happen. */
+	private List<MyscapeClient.MenagerieItem> readMenagerieItems(ItemContainer menagerie)
+	{
+		List<MyscapeClient.MenagerieItem> items = new ArrayList<>();
+		for (Map.Entry<Integer, Integer> entry : aggregateQuantities(menagerie).entrySet())
+		{
+			items.add(new MyscapeClient.MenagerieItem(entry.getKey(), resolveItemName(entry.getKey()), entry.getValue()));
+		}
+		return items;
+	}
+
+	/** A Tackle Box also genuinely is an ItemContainer (InventoryID.
+	 * TACKLE_BOX), same as the Looting Bag/Seed Vault/Menagerie above --
+	 * read the exact same straightforward way, only reporting contents
+	 * once the player has actually opened it at least once this session
+	 * (same caveat as Bank/Looting Bag/Seed Vault/Menagerie). */
+	private List<MyscapeClient.TackleBoxItem> readTackleBoxItems(ItemContainer tackleBox)
+	{
+		List<MyscapeClient.TackleBoxItem> items = new ArrayList<>();
+		for (Map.Entry<Integer, Integer> entry : aggregateQuantities(tackleBox).entrySet())
+		{
+			items.add(new MyscapeClient.TackleBoxItem(entry.getKey(), resolveItemName(entry.getKey()), entry.getValue()));
 		}
 		return items;
 	}
@@ -973,6 +1021,14 @@ public class MyscapePlugin extends Plugin
 		{
 			latestSeedVaultItems = readSeedVaultItems(container);
 		}
+		else if (containerId == InventoryID.POH_MENAGERIE_PETS)
+		{
+			latestMenagerieItems = readMenagerieItems(container);
+		}
+		else if (containerId == InventoryID.TACKLE_BOX)
+		{
+			latestTackleBoxItems = readTackleBoxItems(container);
+		}
 		else
 		{
 			return;
@@ -1185,7 +1241,8 @@ public class MyscapePlugin extends Plugin
 
 	/** (Re)schedules the single shared debounce task -- shared across
 	 * bank/inventory/equipment/potion storage/rune pouch/looting bag/
-	 * seed vault/skills/quests/diaries rather than one per source, since
+	 * seed vault/menagerie/tackle box/skills/quests/diaries rather than
+	 * one per source, since
 	 * a player actively shopping or grinding typically touches more
 	 * than one of them in the same burst (withdrawing from the bank,
 	 * then equipping what they withdrew; training a skill while also
@@ -1228,7 +1285,7 @@ public class MyscapePlugin extends Plugin
 					panel.syncInBackground(
 						latestBankItems, latestInventoryItems, latestEquipmentItems,
 						latestPotionStorageItems, latestRunePouchItems, latestLootingBagItems,
-						latestSeedVaultItems,
+						latestSeedVaultItems, latestMenagerieItems, latestTackleBoxItems,
 						latestSkillItems, latestCompletedQuestNames, latestDiaryTierItems);
 				}
 			},

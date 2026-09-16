@@ -59,6 +59,7 @@ class MyscapePanel extends PluginPanel
 	// likely join this list later -- nothing here assumes exactly seven.
 	private static final String[] STATUS_STORAGE_KEYS = {
 		"bank", "equipment", "inventory", "potion_storage", "seed_vault", "rune_pouch", "looting_bag",
+		"menagerie", "tackle_box",
 	};
 	private static final Map<String, String> STATUS_STORAGE_LABELS = buildStatusStorageLabels();
 
@@ -72,6 +73,8 @@ class MyscapePanel extends PluginPanel
 		labels.put("seed_vault", "Seed Vault");
 		labels.put("rune_pouch", "Rune Pouch");
 		labels.put("looting_bag", "Looting Bag");
+		labels.put("menagerie", "Menagerie");
+		labels.put("tackle_box", "Tackle Box");
 		return Collections.unmodifiableMap(labels);
 	}
 
@@ -123,6 +126,8 @@ class MyscapePanel extends PluginPanel
 	private Integer lastRunePouchItemCount;
 	private Integer lastLootingBagItemCount;
 	private Integer lastSeedVaultItemCount;
+	private Integer lastMenagerieItemCount;
+	private Integer lastTackleBoxItemCount;
 	// Same deal, for skills/completed quests/diary tiers -- the size of
 	// the most recently confirmed snapshot for each, same reasoning as
 	// the five item-source counts above (and reset alongside them in
@@ -361,6 +366,8 @@ class MyscapePanel extends PluginPanel
 		lastRunePouchItemCount = null;
 		lastLootingBagItemCount = null;
 		lastSeedVaultItemCount = null;
+		lastMenagerieItemCount = null;
+		lastTackleBoxItemCount = null;
 		lastLootEventCount = null;
 		lastSkillCount = null;
 		lastQuestCount = null;
@@ -455,9 +462,9 @@ class MyscapePanel extends PluginPanel
 
 	/** Called by the plugin (see MyscapePlugin#scheduleSyncDebounced),
 	 * off the EDT, once bank/inventory/equipment/potion storage/rune
-	 * pouch/looting bag/seed vault/skills/quests/diaries have settled
-	 * after a change -- syncs whichever of these have actually been
-	 * observed this session (any
+	 * pouch/looting bag/seed vault/menagerie/tackle box/skills/quests/
+	 * diaries have settled after a change -- syncs whichever of these
+	 * have actually been observed this session (any
 	 * argument may be null; see the field docs on MyscapePlugin's
 	 * latest*Items/latestSkillItems/latestCompletedQuestNames/
 	 * latestDiaryTierItems fields) and, on each success, updates the
@@ -478,6 +485,8 @@ class MyscapePanel extends PluginPanel
 		List<MyscapeClient.RunePouchItem> runePouchItems,
 		List<MyscapeClient.LootingBagItem> lootingBagItems,
 		List<MyscapeClient.SeedVaultItem> seedVaultItems,
+		List<MyscapeClient.MenagerieItem> menagerieItems,
+		List<MyscapeClient.TackleBoxItem> tackleBoxItems,
 		List<MyscapeClient.SkillItem> skillItems,
 		List<String> completedQuestNames,
 		List<MyscapeClient.DiaryTierItem> diaryTierItems)
@@ -509,6 +518,14 @@ class MyscapePanel extends PluginPanel
 		if (seedVaultItems != null)
 		{
 			client.syncSeedVault(seedVaultItems, syncCallback("seed_vault", count -> lastSeedVaultItemCount = count));
+		}
+		if (menagerieItems != null)
+		{
+			client.syncMenagerie(menagerieItems, syncCallback("menagerie", count -> lastMenagerieItemCount = count));
+		}
+		if (tackleBoxItems != null)
+		{
+			client.syncTackleBox(tackleBoxItems, syncCallback("tackle_box", count -> lastTackleBoxItemCount = count));
 		}
 		if (skillItems != null)
 		{
@@ -748,6 +765,14 @@ class MyscapePanel extends PluginPanel
 		if (lastSeedVaultItemCount != null)
 		{
 			parts.add(lastSeedVaultItemCount + " seed vault");
+		}
+		if (lastMenagerieItemCount != null)
+		{
+			parts.add(lastMenagerieItemCount + " menagerie");
+		}
+		if (lastTackleBoxItemCount != null)
+		{
+			parts.add(lastTackleBoxItemCount + " tackle box");
 		}
 		if (lastSkillCount != null)
 		{
