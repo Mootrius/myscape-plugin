@@ -1178,7 +1178,7 @@ public class MyscapePlugin extends Plugin
 		{
 			latestMagicCapeRackItems = readMagicCapeRackItems(containerId, container);
 		}
-		else if (containerId >= 390 && containerId <= 700)
+		else if ((containerId >= 390 && containerId <= 700) || containerId == 33405)
 		{
 			// TEMPORARY DIAGNOSTIC -- none of the six POH_COSTUME_ROOM_*
 			// branches above matched, even though this containerId is in
