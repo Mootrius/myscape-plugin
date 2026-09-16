@@ -16,6 +16,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import javax.inject.Inject;
+import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.ChatMessageType;
 import net.runelite.api.Client;
 import net.runelite.api.EnumComposition;
@@ -75,6 +76,7 @@ import okhttp3.OkHttpClient;
  * the Mootrius/myscape repo's app/loot.py), which was already being
  * captured for the Loot Tracker feature before Mindmaps existed.
  */
+@Slf4j
 @PluginDescriptor(
 	name = "myscape",
 	description = "Links this client to your myscape.io account for purchase-goal and loot tracking.",
@@ -461,6 +463,12 @@ public class MyscapePlugin extends Plugin
 	@Override
 	protected void startUp()
 	{
+		// TEMPORARY DIAGNOSTIC -- confirms this exact build (with the
+		// Costume Room container-id logging below) is the one actually
+		// running, so a quiet log file doesn't get misread as "no
+		// container ever fired" when it might really mean "this build
+		// never loaded." Remove alongside logUnrecognizedPohContainer.
+		log.info("[myscape debug] plugin started (Costume Room diagnostic build)");
 		MyscapeClient apiClient = new MyscapeClient(okHttpClient, config, configManager);
 		panel = new MyscapePanel(apiClient, this);
 
@@ -1214,6 +1222,12 @@ public class MyscapePlugin extends Plugin
 		{
 			preview.append("(empty)");
 		}
+		// The log line is the reliable channel -- it always lands in
+		// ~/.runelite/logs/client.log regardless of which chat tab is
+		// active or whether CONSOLE-type messages are filtered/visible
+		// in this client's chatbox settings. The chat message is kept
+		// too since it costs nothing extra, in case it does show up.
+		log.info("[myscape debug] unrecognized container {}: {}", containerId, preview);
 		client.addChatMessage(ChatMessageType.CONSOLE, "",
 			"[myscape debug] unrecognized container " + containerId + ": " + preview,
 			null);
