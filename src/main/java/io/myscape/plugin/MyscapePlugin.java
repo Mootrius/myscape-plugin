@@ -124,6 +124,21 @@ public class MyscapePlugin extends Plugin
 	// into one sync per container, sent once things settle.
 	private static final int SYNC_DEBOUNCE_SECONDS = 2;
 
+	// The plain "quiet seconds" debounce above never fires at all while
+	// changes keep landing back-to-back -- which is exactly what
+	// happens during sustained activity with no natural pause (killing
+	// monsters continuously, thieving stalls, high alching), since each
+	// new change cancels and reschedules the same task before it ever
+	// gets to run. That's what made Possessions Monitoring look like it
+	// barely updates: the inventory genuinely was changing constantly,
+	// so the debounce kept getting pushed back instead of collapsing a
+	// short burst the way it's meant to. Capping how long a single
+	// burst can keep deferring the sync bounds the staleness even while
+	// the burst is still going, without giving up the original
+	// quiet-period collapsing for the common short-burst case (banking,
+	// gearing up).
+	private static final int SYNC_MAX_WAIT_SECONDS = 10;
+
 	// The equipment container's items are indexed by slot (see
 	// EquipmentInventorySlot#getSlotIdx), not aggregated by item id the
 	// way bank/inventory are -- this maps each slot index this plugin
@@ -322,6 +337,15 @@ public class MyscapePlugin extends Plugin
 	private ScheduledFuture<?> linkStatusPollTask;
 	private ScheduledFuture<?> syncDebounceTask;
 
+	// When the current debounce burst started (see scheduleSyncDebounced
+	// below), or -1 between bursts. Written from the client thread
+	// (every scheduleSyncDebounced call happens there) and reset back to
+	// -1 from `executor`'s thread once the debounce task actually fires
+	// -- a plain volatile long is enough here since it's only ever used
+	// to compute a delay heuristic, not for correctness the way the
+	// synced snapshot fields are.
+	private volatile long syncBurstStartMillis = -1;
+
 	// Only ever written from the client thread (see onGameStateChanged /
 	// onGameTick below, both guaranteed by RuneLite's event bus to run
 	// there) and only ever read from the Swing EDT via the getters below
@@ -424,6 +448,7 @@ public class MyscapePlugin extends Plugin
 			syncDebounceTask.cancel(false);
 			syncDebounceTask = null;
 		}
+		syncBurstStartMillis = -1;
 		clientToolbar.removeNavigation(navButton);
 		panel = null;
 		currentAccountHash = null;
@@ -1116,15 +1141,33 @@ public class MyscapePlugin extends Plugin
 	 * least once (see the field docs above) -- reading only the
 	 * already-captured volatile snapshots, never the RuneLite Client
 	 * itself, since this runs on `executor`'s thread, not the client
-	 * thread. */
+	 * thread.
+	 *
+	 * The delay itself shrinks as a single burst goes on: it's normally
+	 * the full SYNC_DEBOUNCE_SECONDS quiet period, but once the burst
+	 * that started at syncBurstStartMillis has been running for close to
+	 * SYNC_MAX_WAIT_SECONDS, the delay is clamped down so the task still
+	 * fires at that cap rather than waiting for a quiet moment that a
+	 * sustained activity (fighting, thieving, high alching) might not
+	 * give it for minutes. A short burst never notices the cap -- it
+	 * only bites once a burst has genuinely run long. */
 	private void scheduleSyncDebounced()
 	{
+		long now = System.currentTimeMillis();
+		if (syncBurstStartMillis < 0)
+		{
+			syncBurstStartMillis = now;
+		}
+		long elapsedSeconds = (now - syncBurstStartMillis) / 1000;
+		long delaySeconds = Math.max(0, Math.min(SYNC_DEBOUNCE_SECONDS, SYNC_MAX_WAIT_SECONDS - elapsedSeconds));
+
 		if (syncDebounceTask != null)
 		{
 			syncDebounceTask.cancel(false);
 		}
 		syncDebounceTask = executor.schedule(
 			() -> {
+				syncBurstStartMillis = -1;
 				if (panel != null)
 				{
 					panel.syncInBackground(
@@ -1133,7 +1176,7 @@ public class MyscapePlugin extends Plugin
 						latestSkillItems, latestCompletedQuestNames, latestDiaryTierItems);
 				}
 			},
-			SYNC_DEBOUNCE_SECONDS, TimeUnit.SECONDS);
+			delaySeconds, TimeUnit.SECONDS);
 	}
 
 	@Subscribe
