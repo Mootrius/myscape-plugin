@@ -16,6 +16,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import javax.inject.Inject;
+import net.runelite.api.ChatMessageType;
 import net.runelite.api.Client;
 import net.runelite.api.EnumComposition;
 import net.runelite.api.EnumID;
@@ -1165,12 +1166,57 @@ public class MyscapePlugin extends Plugin
 		{
 			latestMagicCapeRackItems = readMagicCapeRackItems(containerId, container);
 		}
+		else if (containerId >= 390 && containerId <= 700)
+		{
+			// TEMPORARY DIAGNOSTIC -- none of the six POH_COSTUME_ROOM_*
+			// branches above matched, even though this containerId is in
+			// the neighborhood of every candidate ID this session's
+			// research turned up for the Costume Room's storage pieces
+			// (the 446-488 block used above, and InventoryID.POH_COSTUMES
+			// = 637, a single unified container a closer look at
+			// InterfaceID.POH_COSTUMES = 675 suggests the modern Costume
+			// Room UI might actually use instead of six separate ones).
+			// There's no way to run the actual game client from where
+			// this was written to settle which it really is, so this
+			// posts straight to the chatbox instead of silently dropping
+			// -- remove once the real container ID(s) are confirmed and
+			// the branches above are corrected to match.
+			logUnrecognizedPohContainer(containerId, container);
+			return;
+		}
 		else
 		{
 			return;
 		}
 
 		scheduleSyncDebounced();
+	}
+
+	private void logUnrecognizedPohContainer(int containerId, ItemContainer container)
+	{
+		StringBuilder preview = new StringBuilder();
+		int shown = 0;
+		for (Map.Entry<Integer, Integer> entry : aggregateQuantities(container).entrySet())
+		{
+			if (shown >= 6)
+			{
+				preview.append(", ...");
+				break;
+			}
+			if (shown > 0)
+			{
+				preview.append(", ");
+			}
+			preview.append(entry.getKey()).append("x").append(entry.getValue());
+			shown++;
+		}
+		if (shown == 0)
+		{
+			preview.append("(empty)");
+		}
+		client.addChatMessage(ChatMessageType.CONSOLE, "",
+			"[myscape debug] unrecognized container " + containerId + ": " + preview,
+			null);
 	}
 
 	/** Fires the moment a kill/clue-casket/pickpocket hands over loot --
