@@ -489,9 +489,39 @@ public class MyscapePlugin extends Plugin
 		List<MyscapeClient.BankItem> items = new ArrayList<>();
 		for (Map.Entry<Integer, Integer> entry : aggregateQuantities(bank).entrySet())
 		{
-			items.add(new MyscapeClient.BankItem(entry.getKey(), resolveItemName(entry.getKey()), entry.getValue()));
+			int itemId = entry.getKey();
+			if (isPlaceholder(itemId))
+			{
+				continue;
+			}
+			items.add(new MyscapeClient.BankItem(itemId, resolveItemName(itemId), entry.getValue()));
 		}
 		return items;
+	}
+
+	/** A bank placeholder -- the greyed-out marker "Always Placeholder"/
+	 * withdraw-as-placeholder leaves behind in a slot to show "you keep
+	 * one of these here" without actually holding any -- is its own
+	 * distinct item id in the client's item table (a real ItemContainer
+	 * slot, with a real nonzero quantity, so aggregateQuantities' own
+	 * quantity<=0 check above never catches it), not a quantity-0
+	 * marker on the real item's own id. RuneLite exposes that via
+	 * getPlaceholderTemplateId(), which is -1 for every genuine item and
+	 * only ever set on a placeholder's own id -- the one reliable way to
+	 * tell "an empty placeholder slot" apart from "one of the real
+	 * thing" (see readBankItems above, which is the only caller: a
+	 * placeholder is a bank-only concept, nothing else read here can
+	 * have one). */
+	private boolean isPlaceholder(int itemId)
+	{
+		try
+		{
+			return itemManager.getItemComposition(itemId).getPlaceholderTemplateId() != -1;
+		}
+		catch (Exception e)
+		{
+			return false;
+		}
 	}
 
 	private List<MyscapeClient.InventoryItem> readInventoryItems(ItemContainer inventory)
