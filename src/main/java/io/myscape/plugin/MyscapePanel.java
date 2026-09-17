@@ -5,7 +5,6 @@ import java.awt.Color;
 import java.awt.Component;
 import java.awt.CardLayout;
 import java.awt.Cursor;
-import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.awt.Font;
 import java.awt.GridBagConstraints;
@@ -19,7 +18,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import javax.swing.BorderFactory;
-import javax.swing.Box;
 import javax.swing.BoxLayout;
 import javax.swing.ImageIcon;
 import javax.swing.JButton;
@@ -255,36 +253,62 @@ class MyscapePanel extends PluginPanel
 	{
 		JPanel panel = new JPanel();
 		panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
-		JLabel label = new JLabel("<html>Please log in to start the plugin.</html>");
-		label.setAlignmentX(Component.LEFT_ALIGNMENT);
+		JLabel label = new JLabel("<html>Please log in to start.</html>");
+		label.setAlignmentX(Component.CENTER_ALIGNMENT);
+		label.setHorizontalAlignment(SwingConstants.CENTER);
 		panel.add(label);
 		return panel;
 	}
 
+	/** Like buildLinkedCard() below, this uses GridBagLayout directly
+	 * (single column) rather than a BoxLayout column -- the intro text
+	 * and the LINK button both need to be reliably centered, and
+	 * BoxLayout's per-child alignment/maximum-size tricks turned out not
+	 * to be trustworthy for that (see buildLinkedCard()'s own doc
+	 * comment for the real debug numbers that showed it failing). */
 	private JPanel buildLinkCard()
 	{
-		JPanel panel = new JPanel();
-		panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
+		JPanel panel = new JPanel(new GridBagLayout());
 
-		JLabel intro = new JLabel("<html>Please paste in the code from myscape.io</html>");
-		intro.setAlignmentX(Component.LEFT_ALIGNMENT);
-		panel.add(intro);
-		panel.add(Box.createRigidArea(new Dimension(0, 8)));
+		JLabel intro = new JLabel("<html>Please enter your code from myscape.io</html>");
+		intro.setHorizontalAlignment(SwingConstants.CENTER);
+		GridBagConstraints introConstraints = new GridBagConstraints();
+		introConstraints.gridx = 0;
+		introConstraints.gridy = 0;
+		introConstraints.anchor = GridBagConstraints.CENTER;
+		introConstraints.fill = GridBagConstraints.HORIZONTAL;
+		introConstraints.weightx = 1.0;
+		panel.add(intro, introConstraints);
 
-		codeField.setAlignmentX(Component.LEFT_ALIGNMENT);
-		codeField.setMaximumSize(new Dimension(Integer.MAX_VALUE, codeField.getPreferredSize().height));
-		panel.add(codeField);
-		panel.add(Box.createRigidArea(new Dimension(0, 8)));
+		GridBagConstraints codeConstraints = new GridBagConstraints();
+		codeConstraints.gridx = 0;
+		codeConstraints.gridy = 1;
+		codeConstraints.anchor = GridBagConstraints.WEST;
+		codeConstraints.fill = GridBagConstraints.HORIZONTAL;
+		codeConstraints.weightx = 1.0;
+		codeConstraints.insets = new Insets(8, 0, 0, 0);
+		panel.add(codeField, codeConstraints);
 
-		linkButton.setAlignmentX(Component.LEFT_ALIGNMENT);
+		linkButton.setText("LINK");
 		linkButton.addActionListener(this::onLinkClicked);
-		panel.add(linkButton);
+		GridBagConstraints buttonConstraints = new GridBagConstraints();
+		buttonConstraints.gridx = 0;
+		buttonConstraints.gridy = 2;
+		buttonConstraints.anchor = GridBagConstraints.CENTER;
+		buttonConstraints.weightx = 1.0;
+		buttonConstraints.insets = new Insets(8, 0, 0, 0);
+		panel.add(linkButton, buttonConstraints);
 
 		linkErrorLabel.setForeground(ColorScheme.PROGRESS_ERROR_COLOR);
-		linkErrorLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
 		linkErrorLabel.setVisible(false);
-		panel.add(Box.createRigidArea(new Dimension(0, 6)));
-		panel.add(linkErrorLabel);
+		GridBagConstraints errorConstraints = new GridBagConstraints();
+		errorConstraints.gridx = 0;
+		errorConstraints.gridy = 3;
+		errorConstraints.anchor = GridBagConstraints.WEST;
+		errorConstraints.fill = GridBagConstraints.HORIZONTAL;
+		errorConstraints.weightx = 1.0;
+		errorConstraints.insets = new Insets(6, 0, 0, 0);
+		panel.add(linkErrorLabel, errorConstraints);
 
 		return panel;
 	}
