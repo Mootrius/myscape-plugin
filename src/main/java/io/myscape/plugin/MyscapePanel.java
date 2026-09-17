@@ -6,6 +6,7 @@ import java.awt.Component;
 import java.awt.CardLayout;
 import java.awt.Cursor;
 import java.awt.Dimension;
+import java.awt.FlowLayout;
 import java.awt.Font;
 import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
@@ -20,6 +21,7 @@ import java.util.Map;
 import javax.swing.BorderFactory;
 import javax.swing.Box;
 import javax.swing.BoxLayout;
+import javax.swing.ImageIcon;
 import javax.swing.JButton;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
@@ -28,6 +30,7 @@ import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
 import net.runelite.client.ui.ColorScheme;
 import net.runelite.client.ui.PluginPanel;
+import net.runelite.client.util.LinkBrowser;
 
 /**
  * The plugin's sidebar panel -- the RuneLite-side half of the two-step
@@ -139,14 +142,41 @@ class MyscapePanel extends PluginPanel
 		cardPanel.add(buildLinkCard(), CARD_LINK);
 		cardPanel.add(buildLinkedCard(), CARD_LINKED);
 
-		// The wordmark sits above cardPanel regardless of which card is
-		// currently showing, so it needs its own wrapper -- BorderLayout
-		// only has one NORTH slot, already taken by cardPanel itself.
-		JPanel topPanel = new JPanel();
-		topPanel.setLayout(new BoxLayout(topPanel, BoxLayout.Y_AXIS));
-		topPanel.add(buildLogo());
-		topPanel.add(Box.createRigidArea(new Dimension(0, 12)));
-		topPanel.add(cardPanel);
+		// The wordmark (and, below it, the social links row) sits above
+		// cardPanel regardless of which card is currently showing, so it
+		// needs its own wrapper -- BorderLayout only has one NORTH slot,
+		// already taken by cardPanel itself. GridBagLayout rather than a
+		// BoxLayout column for the same reason buildLinkedCard() uses it
+		// (see that method's doc comment): a BoxLayout column here
+		// wouldn't reliably stretch the social links row to the panel's
+		// true width for it to center within.
+		JPanel topPanel = new JPanel(new GridBagLayout());
+
+		GridBagConstraints logoConstraints = new GridBagConstraints();
+		logoConstraints.gridx = 0;
+		logoConstraints.gridy = 0;
+		logoConstraints.anchor = GridBagConstraints.CENTER;
+		logoConstraints.fill = GridBagConstraints.HORIZONTAL;
+		logoConstraints.weightx = 1.0;
+		topPanel.add(buildLogo(), logoConstraints);
+
+		GridBagConstraints socialConstraints = new GridBagConstraints();
+		socialConstraints.gridx = 0;
+		socialConstraints.gridy = 1;
+		socialConstraints.anchor = GridBagConstraints.CENTER;
+		socialConstraints.weightx = 1.0;
+		socialConstraints.insets = new Insets(6, 0, 0, 0);
+		topPanel.add(buildSocialLinksRow(), socialConstraints);
+
+		GridBagConstraints cardPanelConstraints = new GridBagConstraints();
+		cardPanelConstraints.gridx = 0;
+		cardPanelConstraints.gridy = 2;
+		cardPanelConstraints.anchor = GridBagConstraints.CENTER;
+		cardPanelConstraints.fill = GridBagConstraints.HORIZONTAL;
+		cardPanelConstraints.weightx = 1.0;
+		cardPanelConstraints.insets = new Insets(12, 0, 0, 0);
+		topPanel.add(cardPanel, cardPanelConstraints);
+
 		add(topPanel, BorderLayout.NORTH);
 
 		cards.show(cardPanel, CARD_CHECKING);
@@ -166,6 +196,50 @@ class MyscapePanel extends PluginPanel
 		logo.setAlignmentX(Component.CENTER_ALIGNMENT);
 		logo.setHorizontalAlignment(SwingConstants.CENTER);
 		return logo;
+	}
+
+	/** The small row of icon-only social links directly under the
+	 * wordmark, shown above every card the same way the wordmark itself
+	 * is (see the constructor) -- Discord, GitHub, then Patreon, left to
+	 * right. A plain FlowLayout.CENTER is fine for this row's own
+	 * internal layout (unlike the outer cards, it isn't trying to
+	 * stretch anything to fill available width, just lay three small
+	 * buttons out side by side at their natural size), it only needed
+	 * GridBagLayout help one level up, in the constructor, to actually
+	 * get centered within the sidebar's true width in the first place. */
+	private JPanel buildSocialLinksRow()
+	{
+		JPanel row = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 0));
+		row.setOpaque(false);
+		row.add(buildSocialButton("discord.png", "Discord", "https://discord.gg/myscape"));
+		row.add(buildSocialButton("github.png", "GitHub", "https://github.com/Mootrius/myscape-plugin"));
+		row.add(buildSocialButton("patreon.png", "Patreon", "https://patreon.com/myscape"));
+		return row;
+	}
+
+	/** One icon-only button in the social links row above -- iconResource
+	 * is a plain filename resolved relative to this class's own package
+	 * (see the white discord.png/github.png/patreon.png files alongside
+	 * MyscapePanel.java under src/main/resources), tooltipText names the
+	 * site for anyone hovering, and url is opened in the player's normal
+	 * desktop browser via RuneLite's own LinkBrowser (rather than
+	 * java.awt.Desktop directly) since that's what every other
+	 * RuneLite/plugin-hub plugin already uses for exactly this, and it
+	 * already handles the cross-platform/headless edge cases so this
+	 * doesn't have to. Flat and borderless to read as a plain icon
+	 * rather than a boxed button, matching the unlink button's
+	 * lightweight sidebar chrome rather than competing with it. */
+	private JButton buildSocialButton(String iconResource, String tooltipText, String url)
+	{
+		JButton button = new JButton(new ImageIcon(getClass().getResource(iconResource)));
+		button.setToolTipText(tooltipText);
+		button.setBorderPainted(false);
+		button.setContentAreaFilled(false);
+		button.setFocusPainted(false);
+		button.setMargin(new Insets(2, 2, 2, 2));
+		button.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+		button.addActionListener(event -> LinkBrowser.browse(url));
+		return button;
 	}
 
 	private JPanel buildCheckingCard()
