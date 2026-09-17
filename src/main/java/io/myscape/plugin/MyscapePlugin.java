@@ -460,25 +460,17 @@ public class MyscapePlugin extends Plugin
 	private volatile List<String> latestCompletedQuestNames;
 	private volatile List<MyscapeClient.DiaryTierItem> latestDiaryTierItems;
 
-	// TEMPORARY DIAGNOSTIC for the Master Scroll Book, take three: the
-	// previous (deduped widget-group) diagnostic did its job --
-	// InterfaceID.BOOKOFSCROLLS (597) loaded exactly once, right when
-	// the Master Scroll Book was opened, and its own gameval source
-	// (InterfaceID.Bookofscrolls' nested constants -- TELEPORTSCROLL_
-	// NARDAH, _DIGSITE, and so on for all 20 teleport types) confirms
-	// this really is the right interface, not a guess. What's still
-	// unknown is HOW it represents "unlocked" -- itemId, hidden state,
-	// text, some combination -- so onWidgetLoaded below now dumps
-	// every child widget's key properties the moment this interface
-	// loads, the same log-and-look approach that found
-	// POH_COSTUME_ROOM_CONTAINER_ID and InterfaceID.BOOKOFSCROLLS
-	// itself. This flag defers a second dump to the very next game
-	// tick after the first, in case the interface's own script
-	// populates these widgets a moment after they're first created
-	// rather than immediately. Remove this field and
-	// logBookOfScrollsWidgets once the real read logic is written and
-	// wired up, the same way every other source here was.
-	private volatile boolean bookOfScrollsDumpPending;
+	// The Master Scroll Book, unlike every other source above, isn't
+	// backed by a RuneLite ItemContainer -- two rounds of diagnostics
+	// confirmed that (see readMasterScrollBookItems' own comment for
+	// the full story and the widget layout they found), so there's no
+	// ItemContainerChanged to key off of. This flag is set from
+	// onWidgetLoaded below instead, whenever InterfaceID.BOOKOFSCROLLS
+	// itself loads (i.e. the player opened it), and consumed on the
+	// next game tick the same way skillsDirty/questsDirty/diariesDirty
+	// above are.
+	private volatile boolean masterScrollBookDirty;
+	private volatile List<MyscapeClient.MasterScrollBookItem> latestMasterScrollBookItems;
 
 	@Provides
 	MyscapeConfig provideConfig(ConfigManager configManager)
@@ -551,7 +543,8 @@ public class MyscapePlugin extends Plugin
 		latestSkillItems = null;
 		latestCompletedQuestNames = null;
 		latestDiaryTierItems = null;
-		bookOfScrollsDumpPending = false;
+		masterScrollBookDirty = false;
+		latestMasterScrollBookItems = null;
 	}
 
 	/** Aggregates a container's raw slots by item id -- necessary (not
@@ -1319,8 +1312,11 @@ public class MyscapePlugin extends Plugin
 	 * Quest#getState) is what actually determines which quests are done,
 	 * same division of labor as onVarbitChanged/readDiaryTiers below.
 	 *
-	 * Also carries the temporary Master Scroll Book diagnostic -- see
-	 * bookOfScrollsDumpPending's own comment for the full story. */
+	 * Also sets masterScrollBookDirty the moment
+	 * InterfaceID.BOOKOFSCROLLS loads -- see that field's own comment
+	 * and readMasterScrollBookItems below for why this is the only
+	 * signal available for the Master Scroll Book, unlike every other
+	 * source in this file. */
 	@Subscribe
 	public void onWidgetLoaded(WidgetLoaded event)
 	{
@@ -1329,39 +1325,65 @@ public class MyscapePlugin extends Plugin
 		{
 			questsDirty = true;
 		}
-
-		// TEMPORARY DIAGNOSTIC for the Master Scroll Book -- see
-		// bookOfScrollsDumpPending's own comment above for why this
-		// exists. Dumped once right away, and once more next tick (see
-		// onGameTick below) in case these widgets populate a moment
-		// after the interface itself loads.
-		if (groupId == InterfaceID.BOOKOFSCROLLS)
+		else if (groupId == InterfaceID.BOOKOFSCROLLS)
 		{
-			logBookOfScrollsWidgets();
-			bookOfScrollsDumpPending = true;
+			masterScrollBookDirty = true;
 		}
 	}
 
-	/** TEMPORARY DIAGNOSTIC for the Master Scroll Book -- see
-	 * bookOfScrollsDumpPending's own comment for the full story. Walks
-	 * every child component of InterfaceID.BOOKOFSCROLLS (0 through
-	 * 0x54, the full range of InterfaceID.Bookofscrolls' own nested
-	 * constants -- UNIVERSE through TITLE_ARDEAGLAIS) rather than
-	 * hand-picking the 20 TELEPORTSCROLL_* ones, so nothing about how
-	 * "unlocked" is actually represented (itemId, hidden state, text,
-	 * some combination) has to be guessed at ahead of seeing it live. */
-	private void logBookOfScrollsWidgets()
+	/** Reads the Master Scroll Book's contents straight off
+	 * InterfaceID.BOOKOFSCROLLS' own widgets -- the only source in this
+	 * file that isn't a RuneLite ItemContainer (see this field's
+	 * MyscapeClient.java comment for the two rounds of diagnostics that
+	 * confirmed that). A live widget dump showed a consistent pattern
+	 * across all 20 teleport scrolls this interface holds, including
+	 * the several whose child component ids don't follow the tidy
+	 * TELEPORTSCROLL_X/GFX_X/TEXT_X/TITLE_X stride RuneLite's own
+	 * gameval constants suggest (Cerberus, Revenants, Watson, Guthixian
+	 * Temple are numbered irregularly): whichever widget actually
+	 * carries a real itemId is immediately followed by a sibling widget
+	 * whose text is the held quantity as a plain integer ("0" for a
+	 * scroll type never deposited), then one more sibling whose text is
+	 * the scroll's display name. Walking every child by id and matching
+	 * that adjacency avoids hardcoding 20 irregular id triples by hand.
+	 * A quantity of 0 is skipped, same as an empty/untouched slot
+	 * anywhere else in this file (see aggregateQuantities' own
+	 * comment). Display names sometimes carry a stray "<br>" from the
+	 * interface's own line-wrapping (e.g. "Arde-<br>aglais") -- stripped
+	 * here rather than synced verbatim. */
+	private List<MyscapeClient.MasterScrollBookItem> readMasterScrollBookItems()
 	{
+		List<MyscapeClient.MasterScrollBookItem> items = new ArrayList<>();
 		for (int childId = 0; childId <= 0x54; childId++)
 		{
-			Widget widget = client.getWidget(InterfaceID.BOOKOFSCROLLS, childId);
-			if (widget == null)
+			Widget iconWidget = client.getWidget(InterfaceID.BOOKOFSCROLLS, childId);
+			if (iconWidget == null || iconWidget.getItemId() <= 0)
 			{
 				continue;
 			}
-			log.info("[myscape] BOOKOFSCROLLS child={} itemId={} itemQty={} hidden={} text=\"{}\"",
-				childId, widget.getItemId(), widget.getItemQuantity(), widget.isHidden(), widget.getText());
+			Widget quantityWidget = client.getWidget(InterfaceID.BOOKOFSCROLLS, childId + 1);
+			if (quantityWidget == null)
+			{
+				continue;
+			}
+			int quantity;
+			try
+			{
+				quantity = Integer.parseInt(quantityWidget.getText().trim());
+			}
+			catch (NumberFormatException e)
+			{
+				continue;
+			}
+			if (quantity <= 0)
+			{
+				continue;
+			}
+			Widget nameWidget = client.getWidget(InterfaceID.BOOKOFSCROLLS, childId + 2);
+			String name = nameWidget == null ? "" : nameWidget.getText().replace("<br>", "");
+			items.add(new MyscapeClient.MasterScrollBookItem(iconWidget.getItemId(), name, quantity));
 		}
+		return items;
 	}
 
 	/** Whether varbitId is one of the 12 Rune Pouch type/quantity slot
@@ -1396,8 +1418,8 @@ public class MyscapePlugin extends Plugin
 
 	/** (Re)schedules the single shared debounce task -- shared across
 	 * bank/inventory/equipment/potion storage/rune pouch/looting bag/
-	 * seed vault/tackle box/PoH/Forestry Kit/Seed Box/skills/quests/diaries
-	 * rather than one per source, since
+	 * seed vault/tackle box/PoH/Forestry Kit/Seed Box/Master Scroll
+	 * Book/skills/quests/diaries rather than one per source, since
 	 * a player actively shopping or grinding typically touches more
 	 * than one of them in the same burst (withdrawing from the bank,
 	 * then equipping what they withdrew; training a skill while also
@@ -1441,7 +1463,7 @@ public class MyscapePlugin extends Plugin
 						latestBankItems, latestInventoryItems, latestEquipmentItems,
 						latestPotionStorageItems, latestRunePouchItems, latestLootingBagItems,
 						latestSeedVaultItems, latestTackleBoxItems, latestPohItems,
-						latestForestryKitItems, latestSeedBoxItems,
+						latestForestryKitItems, latestSeedBoxItems, latestMasterScrollBookItems,
 						latestSkillItems, latestCompletedQuestNames, latestDiaryTierItems);
 				}
 			},
@@ -1529,16 +1551,16 @@ public class MyscapePlugin extends Plugin
 				scheduleSyncDebounced();
 			}
 
-			// TEMPORARY DIAGNOSTIC for the Master Scroll Book -- see
-			// bookOfScrollsDumpPending's own comment above for why this
-			// exists. Not folded into scheduleSyncDebounced/the dirty-flag
-			// pattern above like every real source -- this never syncs
-			// anything, it just logs once more, one tick after
-			// onWidgetLoaded's own immediate dump.
-			if (bookOfScrollsDumpPending)
+			// Same deal, for the Master Scroll Book (see
+			// masterScrollBookDirty's field doc) -- set from onWidgetLoaded
+			// above rather than an ItemContainerChanged branch, since this
+			// is the only source in this file with no ItemContainer to key
+			// off of.
+			if (masterScrollBookDirty)
 			{
-				bookOfScrollsDumpPending = false;
-				logBookOfScrollsWidgets();
+				masterScrollBookDirty = false;
+				latestMasterScrollBookItems = readMasterScrollBookItems();
+				scheduleSyncDebounced();
 			}
 
 			// onGameStateChanged (below) fires the instant the game

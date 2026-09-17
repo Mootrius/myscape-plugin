@@ -57,11 +57,7 @@ class MyscapePanel extends PluginPanel
 	// app/schemas.py), which is also what GET /api/players/me/sync-status
 	// (fetchSyncStatus below) reports back keyed by. More storages will
 	// likely join this list later -- nothing here assumes exactly
-	// twelve. "master_scroll_book" in particular will keep showing "Not
-	// synced yet" here for a while -- nothing in MyscapePlugin actually
-	// syncs it yet (see MasterScrollBookItem's own comment in
-	// MyscapeClient.java for why), same as any other listed storage
-	// that simply hasn't been wired up to sync at all yet.
+	// twelve.
 	private static final String[] STATUS_STORAGE_KEYS = {
 		"bank", "equipment", "inventory", "potion_storage", "seed_vault", "rune_pouch", "looting_bag",
 		"tackle_box", "poh", "forestry_kit", "master_scroll_book", "seed_box",
@@ -138,6 +134,7 @@ class MyscapePanel extends PluginPanel
 	private Integer lastPohItemCount;
 	private Integer lastForestryKitItemCount;
 	private Integer lastSeedBoxItemCount;
+	private Integer lastMasterScrollBookItemCount;
 	// Same deal, for skills/completed quests/diary tiers -- the size of
 	// the most recently confirmed snapshot for each, same reasoning as
 	// the five item-source counts above (and reset alongside them in
@@ -380,6 +377,7 @@ class MyscapePanel extends PluginPanel
 		lastPohItemCount = null;
 		lastForestryKitItemCount = null;
 		lastSeedBoxItemCount = null;
+		lastMasterScrollBookItemCount = null;
 		lastLootEventCount = null;
 		lastSkillCount = null;
 		lastQuestCount = null;
@@ -502,6 +500,7 @@ class MyscapePanel extends PluginPanel
 		List<MyscapeClient.PohItem> pohItems,
 		List<MyscapeClient.ForestryKitItem> forestryKitItems,
 		List<MyscapeClient.SeedBoxItem> seedBoxItems,
+		List<MyscapeClient.MasterScrollBookItem> masterScrollBookItems,
 		List<MyscapeClient.SkillItem> skillItems,
 		List<String> completedQuestNames,
 		List<MyscapeClient.DiaryTierItem> diaryTierItems)
@@ -549,6 +548,10 @@ class MyscapePanel extends PluginPanel
 		if (seedBoxItems != null)
 		{
 			client.syncSeedBox(seedBoxItems, syncCallback("seed_box", count -> lastSeedBoxItemCount = count));
+		}
+		if (masterScrollBookItems != null)
+		{
+			client.syncMasterScrollBook(masterScrollBookItems, syncCallback("master_scroll_book", count -> lastMasterScrollBookItemCount = count));
 		}
 		if (skillItems != null)
 		{
@@ -804,6 +807,10 @@ class MyscapePanel extends PluginPanel
 		if (lastSeedBoxItemCount != null)
 		{
 			parts.add(lastSeedBoxItemCount + " seed box");
+		}
+		if (lastMasterScrollBookItemCount != null)
+		{
+			parts.add(lastMasterScrollBookItemCount + " master scroll book");
 		}
 		if (lastSkillCount != null)
 		{

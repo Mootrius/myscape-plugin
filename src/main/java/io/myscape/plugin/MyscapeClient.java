@@ -307,17 +307,15 @@ class MyscapeClient
 
 	/** Same shape again, for the Master Scroll Book's contents -- see
 	 * MasterScrollBookItem in the Mootrius/myscape repo's app/models.py
-	 * for the server side. Unlike every other source in this file,
-	 * there's no confirmed RuneLite gameval InventoryID/InterfaceID
-	 * constant for it -- thorough searching turned up nothing (see that
-	 * server-side docstring for the full account). Kept here, ready to
-	 * use, but nothing in MyscapePlugin actually builds one of these
-	 * yet: MyscapePlugin#onItemContainerChanged carries a temporary
-	 * diagnostic instead, logging any otherwise-unrecognized container
-	 * so the real one can be identified from a live client log --
-	 * exactly the same log-and-look approach that found the Costume
-	 * Room's real container id (33405) after its original six guessed
-	 * constants never fired. */
+	 * for the server side. Unlike every other source in this file, this
+	 * one isn't backed by a RuneLite ItemContainer at all -- confirmed
+	 * absent by research, then confirmed absent for real by a
+	 * diagnostic that logged every otherwise-unrecognized container id
+	 * for a full play session and caught nothing but unrelated Grand
+	 * Exchange activity. MyscapePlugin#readMasterScrollBookItems reads
+	 * this straight off InterfaceID.BOOKOFSCROLLS' own widgets instead
+	 * -- see that method's own comment for the widget layout a second
+	 * diagnostic found. */
 	static final class MasterScrollBookItem
 	{
 		final int itemId;
@@ -844,6 +842,24 @@ class MyscapeClient
 		syncItems("/api/players/me/seed-box", itemsJson, callback);
 	}
 
+	/** Same deal as syncBank, for the Master Scroll Book's contents
+	 * (POST /api/players/me/master-scroll-book) -- see
+	 * MasterScrollBookItem's own comment above for how these are read,
+	 * unlike every other source here. */
+	void syncMasterScrollBook(List<MasterScrollBookItem> items, SyncCallback callback)
+	{
+		JsonArray itemsJson = new JsonArray();
+		for (MasterScrollBookItem item : items)
+		{
+			JsonObject itemJson = new JsonObject();
+			itemJson.addProperty("item_id", item.itemId);
+			itemJson.addProperty("item_name", item.itemName);
+			itemJson.addProperty("quantity", item.quantity);
+			itemsJson.add(itemJson);
+		}
+		syncItems("/api/players/me/master-scroll-book", itemsJson, callback);
+	}
+
 	/** Polls GET /api/players/me/sync-status (see app/main.py in the
 	 * Mootrius/myscape repo) -- what the side panel's Status section
 	 * actually shows (see MyscapePanel's Status card). Deliberately its
@@ -1067,7 +1083,7 @@ class MyscapeClient
 	/** Shared by every "current state" container sync above (syncBank,
 	 * syncInventory, syncEquipment, syncPotionStorage, syncRunePouch,
 	 * syncLootingBag, syncSeedVault, syncTackleBox, syncPoh,
-	 * syncForestryKit, syncSeedBox, ...)
+	 * syncForestryKit, syncSeedBox, syncMasterScrollBook, ...)
 	 * -- each POSTs an {"items": [...]} body to its own path and gets
 	 * back the same {"item_count": N} response, so this just wraps the
 	 * general syncPayload below with that one fixed field name. */
