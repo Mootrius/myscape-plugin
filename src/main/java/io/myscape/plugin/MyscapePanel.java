@@ -119,13 +119,6 @@ class MyscapePanel extends PluginPanel
 
 	private boolean showingLinked;
 
-	// TEMPORARY -- for diagnosing the button/table left-wall alignment
-	// issue only; see the debug print at the end of showLinked() below.
-	// Remove these two fields and that print once the real cause is
-	// found and fixed for good.
-	private JPanel debugUnlinkButtonRow;
-	private JPanel debugStatusTable;
-
 	MyscapePanel(MyscapeClient client, MyscapePlugin plugin)
 	{
 		this.client = client;
@@ -213,47 +206,64 @@ class MyscapePanel extends PluginPanel
 		return panel;
 	}
 
+	/** Unlike every other card here, this one uses GridBagLayout directly
+	 * (single column, gridx=0 throughout) rather than a BoxLayout column
+	 * of nested panels -- a real debug print of the actual on-screen
+	 * pixel bounds showed the previous BoxLayout-plus-wrapper-panel
+	 * approach silently failing to stretch the button/table wrapper rows
+	 * to the card's true width (they stayed at their own narrow content
+	 * width instead, right-flush rather than stretched), even though
+	 * BoxLayout's Y_AXIS docs say a child expands up to its own maximum
+	 * size. GridBagLayout with weightx=1 on every row instead computes
+	 * each row's width fresh from the container's actual current size on
+	 * every layout pass, so it isn't vulnerable to whatever stale-size
+	 * caching that was. A row that should hug the full width uses
+	 * fill=HORIZONTAL; a row that should just be centered at its own
+	 * natural size (the button) uses anchor=CENTER with no fill --
+	 * either way, weightx=1 on at least one row in the column makes
+	 * GridBagLayout give that column (and so every row in it) the full
+	 * available width to work with. */
 	private JPanel buildLinkedCard()
 	{
-		JPanel panel = new JPanel();
-		panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
+		JPanel panel = new JPanel(new GridBagLayout());
 
-		linkedNameLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
 		linkedNameLabel.setHorizontalAlignment(SwingConstants.CENTER);
-		panel.add(linkedNameLabel);
-		panel.add(Box.createRigidArea(new Dimension(0, 8)));
+		GridBagConstraints nameConstraints = new GridBagConstraints();
+		nameConstraints.gridx = 0;
+		nameConstraints.gridy = 0;
+		nameConstraints.anchor = GridBagConstraints.CENTER;
+		nameConstraints.fill = GridBagConstraints.HORIZONTAL;
+		nameConstraints.weightx = 1.0;
+		panel.add(linkedNameLabel, nameConstraints);
 
 		unlinkButton.addActionListener(this::onUnlinkClicked);
-		// A plain setAlignmentX(CENTER_ALIGNMENT) on the button itself
-		// doesn't reliably center it here -- RuneLite's button UI
-		// delegate doesn't respect BoxLayout's per-child alignment the
-		// way a plain JLabel does (compare linkedNameLabel above, which
-		// centers correctly that way). GridBagLayout centers a single
-		// child by default regardless of that, so wrapping the button in
-		// its own single-cell GridBagLayout row sidesteps the problem
-		// entirely; the row then needs its own width to actually cover
-		// the panel's full width for that centering to have anywhere to
-		// happen, which is what the explicit Integer.MAX_VALUE maximum
-		// width below is for (same trick already used on codeField
-		// above).
-		JPanel unlinkButtonRow = new JPanel(new GridBagLayout());
-		unlinkButtonRow.setOpaque(false);
-		unlinkButtonRow.setAlignmentX(Component.LEFT_ALIGNMENT);
-		unlinkButtonRow.setMaximumSize(new Dimension(Integer.MAX_VALUE, unlinkButtonRow.getPreferredSize().height));
-		unlinkButtonRow.add(unlinkButton);
-		panel.add(unlinkButtonRow);
-		debugUnlinkButtonRow = unlinkButtonRow; // TEMPORARY, see the field doc above
+		GridBagConstraints buttonConstraints = new GridBagConstraints();
+		buttonConstraints.gridx = 0;
+		buttonConstraints.gridy = 1;
+		buttonConstraints.anchor = GridBagConstraints.CENTER;
+		buttonConstraints.weightx = 1.0;
+		buttonConstraints.insets = new Insets(8, 0, 0, 0);
+		panel.add(unlinkButton, buttonConstraints);
 
 		unlinkErrorLabel.setForeground(ColorScheme.PROGRESS_ERROR_COLOR);
-		unlinkErrorLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
 		unlinkErrorLabel.setVisible(false);
-		panel.add(Box.createRigidArea(new Dimension(0, 6)));
-		panel.add(unlinkErrorLabel);
+		GridBagConstraints errorConstraints = new GridBagConstraints();
+		errorConstraints.gridx = 0;
+		errorConstraints.gridy = 2;
+		errorConstraints.anchor = GridBagConstraints.WEST;
+		errorConstraints.fill = GridBagConstraints.HORIZONTAL;
+		errorConstraints.weightx = 1.0;
+		errorConstraints.insets = new Insets(6, 0, 0, 0);
+		panel.add(unlinkErrorLabel, errorConstraints);
 
-		panel.add(Box.createRigidArea(new Dimension(0, 14)));
-		JPanel statusTable = buildStatusTable();
-		panel.add(statusTable);
-		debugStatusTable = statusTable; // TEMPORARY, see the field doc above
+		GridBagConstraints tableConstraints = new GridBagConstraints();
+		tableConstraints.gridx = 0;
+		tableConstraints.gridy = 3;
+		tableConstraints.anchor = GridBagConstraints.WEST;
+		tableConstraints.fill = GridBagConstraints.HORIZONTAL;
+		tableConstraints.weightx = 1.0;
+		tableConstraints.insets = new Insets(14, 0, 0, 0);
+		panel.add(buildStatusTable(), tableConstraints);
 
 		return panel;
 	}
@@ -273,7 +283,6 @@ class MyscapePanel extends PluginPanel
 	private JPanel buildStatusTable()
 	{
 		JPanel table = new JPanel(new GridBagLayout());
-		table.setAlignmentX(Component.LEFT_ALIGNMENT);
 
 		int row = 0;
 		for (String key : STATUS_STORAGE_KEYS)
@@ -426,25 +435,6 @@ class MyscapePanel extends PluginPanel
 			renderStatusRow(key);
 		}
 		refreshSyncStatusInBackground();
-
-		// TEMPORARY DEBUG -- prints real on-screen pixel bounds so we can
-		// see what's actually happening instead of guessing further; see
-		// the field doc on debugUnlinkButtonRow/debugStatusTable above.
-		// Remove this whole block once the alignment issue is found and
-		// fixed for good. Double invokeLater so this runs one full EDT
-		// cycle after cards.show() above, after layout has actually
-		// settled rather than mid-transition.
-		SwingUtilities.invokeLater(() -> SwingUtilities.invokeLater(() -> {
-			System.err.println("[myscape-debug] MyscapePanel.getWidth()=" + getWidth()
-				+ " getInsets()=" + getInsets());
-			System.err.println("[myscape-debug] linkedNameLabel.getBounds()=" + linkedNameLabel.getBounds());
-			System.err.println("[myscape-debug] unlinkButton.getBounds()=" + unlinkButton.getBounds());
-			System.err.println("[myscape-debug] unlinkButtonRow.getBounds()=" + (debugUnlinkButtonRow == null ? "null" : debugUnlinkButtonRow.getBounds())
-				+ " parent.getWidth()=" + (debugUnlinkButtonRow == null || debugUnlinkButtonRow.getParent() == null ? "null" : debugUnlinkButtonRow.getParent().getWidth()));
-			System.err.println("[myscape-debug] statusTable.getBounds()=" + (debugStatusTable == null ? "null" : debugStatusTable.getBounds())
-				+ " parent.getWidth()=" + (debugStatusTable == null || debugStatusTable.getParent() == null ? "null" : debugStatusTable.getParent().getWidth())
-				+ " preferredSize=" + (debugStatusTable == null ? "null" : debugStatusTable.getPreferredSize()));
-		}));
 	}
 
 	private void onLinkClicked(ActionEvent event)
