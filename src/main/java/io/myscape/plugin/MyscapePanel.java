@@ -280,6 +280,17 @@ class MyscapePanel extends PluginPanel
 			valueConstraints.gridy = row;
 			valueConstraints.anchor = GridBagConstraints.WEST;
 			valueConstraints.insets = new Insets(2, 0, 2, 0);
+			// With every column's weightx left at the GridBagLayout
+			// default of 0, any leftover width in the table's actual
+			// (now full-card-width) container gets split as margin
+			// around the whole two-column grid, centering it -- each
+			// cell's own WEST anchor only positions content within its
+			// own cell, it doesn't stop the grid as a block from
+			// drifting off the left edge. Giving this trailing column
+			// all the weight routes that leftover space to its right
+			// instead, so the grid as a whole stays pinned to the left
+			// wall the way the name column's own WEST anchor implies.
+			valueConstraints.weightx = 1.0;
 			JLabel valueLabel = new JLabel();
 			statusValueLabels.put(key, valueLabel);
 			table.add(valueLabel, valueConstraints);
