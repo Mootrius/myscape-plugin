@@ -4,12 +4,15 @@ import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Component;
 import java.awt.CardLayout;
+import java.awt.Cursor;
 import java.awt.Dimension;
 import java.awt.Font;
 import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
 import java.awt.Insets;
 import java.awt.event.ActionEvent;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -58,16 +61,20 @@ class MyscapePanel extends PluginPanel
 	// exactly rather than drifting from it over time.
 	private static final Color MYSCAPE_GOLD = new Color(0xff981f);
 
-	// The storages the Status section lists, in the exact order asked
-	// for -- matches POSSESSION_STORAGE_KEYS server-side (see
-	// SyncStatusOut's docstring in the Mootrius/myscape repo's
-	// app/schemas.py), which is also what GET /api/players/me/sync-status
-	// (fetchSyncStatus below) reports back keyed by. More storages will
-	// likely join this list later -- nothing here assumes exactly
-	// twelve.
+	// The storages the Status section lists, alphabetized by their
+	// display label (STATUS_STORAGE_LABELS below) rather than mirroring
+	// POSSESSION_STORAGE_KEYS's server-side order (see SyncStatusOut's
+	// docstring in the Mootrius/myscape repo's app/schemas.py) --
+	// doesn't matter for correctness either way, since
+	// GET /api/players/me/sync-status (fetchSyncStatus below) reports
+	// back keyed by name rather than position, so this is purely about
+	// what's easiest for a player scanning the table to find a
+	// particular storage in. More storages will likely join this list
+	// later -- nothing here assumes exactly twelve, just keep it
+	// alphabetized by label when one does.
 	private static final String[] STATUS_STORAGE_KEYS = {
-		"bank", "equipment", "inventory", "potion_storage", "seed_vault", "rune_pouch", "looting_bag",
-		"tackle_box", "poh", "forestry_kit", "master_scroll_book", "seed_box",
+		"bank", "equipment", "forestry_kit", "inventory", "looting_bag", "master_scroll_book",
+		"poh", "potion_storage", "rune_pouch", "seed_box", "seed_vault", "tackle_box",
 	};
 	private static final Map<String, String> STATUS_STORAGE_LABELS = buildStatusStorageLabels();
 
@@ -256,14 +263,54 @@ class MyscapePanel extends PluginPanel
 		errorConstraints.insets = new Insets(6, 0, 0, 0);
 		panel.add(unlinkErrorLabel, errorConstraints);
 
+		JPanel statusTable = buildStatusTable();
+
+		// A plain "STATUS" label used to sit here uncontrolled (see
+		// commit 66d756b, which dropped it entirely) -- this brings back
+		// the same idea but clickable, so the table underneath (often a
+		// dozen-plus rows, mostly just confirming everything's already
+		// Synced) can be tucked away without pushing the rest of the
+		// card out of view. Plain ASCII text rather than a triangle/caret
+		// glyph for the same reason renderStatusRow below sticks to
+		// plain text instead of a Unicode dot: a glyph missing from
+		// RuneLite's bundled sidebar font renders as a "tofu box"
+		// instead of silently falling back, so plain text sidesteps that
+		// risk entirely.
+		JLabel statusToggle = new JLabel("Status (hide)");
+		statusToggle.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
+		statusToggle.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+		statusToggle.addMouseListener(new MouseAdapter()
+		{
+			@Override
+			public void mouseClicked(MouseEvent event)
+			{
+				boolean nowVisible = !statusTable.isVisible();
+				statusTable.setVisible(nowVisible);
+				statusToggle.setText(nowVisible ? "Status (hide)" : "Status (show)");
+				// GridBagLayout (like BoxLayout) skips an invisible
+				// component's preferred size entirely, so hiding the
+				// table also closes up the gap it left behind -- this
+				// just needs to be told to re-run that layout pass.
+				panel.revalidate();
+				panel.repaint();
+			}
+		});
+		GridBagConstraints toggleConstraints = new GridBagConstraints();
+		toggleConstraints.gridx = 0;
+		toggleConstraints.gridy = 3;
+		toggleConstraints.anchor = GridBagConstraints.WEST;
+		toggleConstraints.fill = GridBagConstraints.HORIZONTAL;
+		toggleConstraints.weightx = 1.0;
+		toggleConstraints.insets = new Insets(14, 0, 4, 0);
+		panel.add(statusToggle, toggleConstraints);
+
 		GridBagConstraints tableConstraints = new GridBagConstraints();
 		tableConstraints.gridx = 0;
-		tableConstraints.gridy = 3;
+		tableConstraints.gridy = 4;
 		tableConstraints.anchor = GridBagConstraints.WEST;
 		tableConstraints.fill = GridBagConstraints.HORIZONTAL;
 		tableConstraints.weightx = 1.0;
-		tableConstraints.insets = new Insets(14, 0, 0, 0);
-		panel.add(buildStatusTable(), tableConstraints);
+		panel.add(statusTable, tableConstraints);
 
 		return panel;
 	}
