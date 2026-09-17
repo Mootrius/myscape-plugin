@@ -37,7 +37,7 @@ import net.runelite.client.ui.PluginPanel;
  * equipment, inventory, potion storage, seed vault, rune pouch, looting
  * bag) and whether each one is currently synced to the website (see
  * refreshSyncStatusInBackground/renderStatusRow below) -- the website's
- * own Possessions Monitoring feature reads exactly these storages, so
+ * own Storages Viewer feature reads exactly these storages, so
  * this is what tells a player whether it has everything it needs yet.
  *
  * Four states, one per CardLayout card: checking the stored key against

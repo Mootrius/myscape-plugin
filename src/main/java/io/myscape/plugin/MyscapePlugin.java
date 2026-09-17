@@ -132,7 +132,7 @@ public class MyscapePlugin extends Plugin
 	// happens during sustained activity with no natural pause (killing
 	// monsters continuously, thieving stalls, high alching), since each
 	// new change cancels and reschedules the same task before it ever
-	// gets to run. That's what made Possessions Monitoring look like it
+	// gets to run. That's what made Storages Viewer look like it
 	// barely updates: the inventory genuinely was changing constantly,
 	// so the debounce kept getting pushed back instead of collapsing a
 	// short burst the way it's meant to. Capping how long a single

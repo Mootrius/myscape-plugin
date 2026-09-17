@@ -232,7 +232,7 @@ class MyscapeClient
 	 * Mootrius/myscape repo's app/models.py for the server side, and
 	 * MyscapePlugin#readPohItems for how this is actually built. Named
 	 * "PoH" (not "Costume Room") since that's the more general house-
-	 * storage bucket Possessions Monitoring's location filter groups
+	 * storage bucket Storages Viewer's location filter groups
 	 * this under -- see PohItem's own docstring server-side.
 	 * Originally six separate classes, one per piece of furniture,
 	 * each assumed to back its own ItemContainer
@@ -267,7 +267,7 @@ class MyscapeClient
 	 * Tackle Box/Seed Vault above, only reporting contents once the
 	 * player has actually opened it at least once this session (same
 	 * caveat as everywhere else here). Grouped under "PORTABLE" rather
-	 * than "PoH" on Possessions Monitoring -- it's carried, not house
+	 * than "PoH" on Storages Viewer -- it's carried, not house
 	 * storage. */
 	static final class ForestryKitItem
 	{
