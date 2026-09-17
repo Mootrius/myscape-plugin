@@ -459,6 +459,27 @@ public class MyscapePlugin extends Plugin
 	private volatile List<String> latestCompletedQuestNames;
 	private volatile List<MyscapeClient.DiaryTierItem> latestDiaryTierItems;
 
+	// TEMPORARY DIAGNOSTIC for the Master Scroll Book, take two: the
+	// onItemContainerChanged diagnostic below never caught it (the
+	// user's own client log showed only container 520, a completely
+	// unrelated, already-named RuneLite constant --
+	// InventoryID.TRADINGPOST_SELL_2, from Grand Exchange activity),
+	// meaning the Master Scroll Book genuinely never fires
+	// ItemContainerChanged at all; it likely isn't backed by a
+	// standard ItemContainer the way every other source here is. This
+	// widens the net to the widget layer instead: onWidgetLoaded below
+	// now also logs each newly-seen interface group id, once per group
+	// per session (deduped via this set) rather than on every single
+	// load -- a full unfiltered widget-load log was ruled out earlier
+	// as far too noisy (chat, minimap, tab switches all fire it
+	// constantly), but deduping bounds the output by how many distinct
+	// interfaces get opened this session, not how many times. The
+	// resulting list, cross-referenced against RuneLite's own
+	// InterfaceID constants, should narrow down which group id is the
+	// Master Scroll Book. Remove this field and the logging in
+	// onWidgetLoaded once that id is confirmed and wired up for real.
+	private final Set<Integer> seenWidgetGroups = new HashSet<>();
+
 	@Provides
 	MyscapeConfig provideConfig(ConfigManager configManager)
 	{
@@ -530,6 +551,7 @@ public class MyscapePlugin extends Plugin
 		latestSkillItems = null;
 		latestCompletedQuestNames = null;
 		latestDiaryTierItems = null;
+		seenWidgetGroups.clear();
 	}
 
 	/** Aggregates a container's raw slots by item id -- necessary (not
@@ -1306,13 +1328,24 @@ public class MyscapePlugin extends Plugin
 	 * instant a quest is finished. This is the trigger for WHEN to
 	 * recheck, not the data itself -- readCompletedQuestNames (via
 	 * Quest#getState) is what actually determines which quests are done,
-	 * same division of labor as onVarbitChanged/readDiaryTiers below. */
+	 * same division of labor as onVarbitChanged/readDiaryTiers below.
+	 *
+	 * Also carries the temporary Master Scroll Book diagnostic -- see
+	 * seenWidgetGroups' own comment for the full story. */
 	@Subscribe
 	public void onWidgetLoaded(WidgetLoaded event)
 	{
-		if (event.getGroupId() == InterfaceID.QUESTSCROLL)
+		int groupId = event.getGroupId();
+		if (groupId == InterfaceID.QUESTSCROLL)
 		{
 			questsDirty = true;
+		}
+
+		// TEMPORARY DIAGNOSTIC for the Master Scroll Book -- see
+		// seenWidgetGroups' own comment above for why this exists.
+		if (seenWidgetGroups.add(groupId))
+		{
+			log.info("[myscape] widget group loaded (first time this session): groupId={}", groupId);
 		}
 	}
 
