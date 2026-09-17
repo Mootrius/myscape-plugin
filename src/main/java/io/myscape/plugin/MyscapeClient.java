@@ -228,11 +228,14 @@ class MyscapeClient
 	}
 
 	/** Same shape as BankItem/InventoryItem/LootingBagItem again, for
-	 * the whole Costume Room -- see CostumeRoomItem in the
+	 * the whole Player-Owned-House Costume Room -- see PohItem in the
 	 * Mootrius/myscape repo's app/models.py for the server side, and
-	 * MyscapePlugin#readCostumeRoomItems for how this is actually
-	 * built. Originally six separate classes, one per piece of
-	 * furniture, each assumed to back its own ItemContainer
+	 * MyscapePlugin#readPohItems for how this is actually built. Named
+	 * "PoH" (not "Costume Room") since that's the more general house-
+	 * storage bucket Possessions Monitoring's location filter groups
+	 * this under -- see PohItem's own docstring server-side.
+	 * Originally six separate classes, one per piece of furniture,
+	 * each assumed to back its own ItemContainer
 	 * (InventoryID.POH_COSTUME_ROOM_MAGIC_WARDROBE_INV and friends).
 	 * Live testing showed every piece actually fires
 	 * ItemContainerChanged on the same containerId (33405, not any of
@@ -242,13 +245,86 @@ class MyscapeClient
 	 * store, not six. Same open-it-once caveat as every other source
 	 * here: contents are only reported once the player has opened the
 	 * Costume Room interface at least once this session. */
-	static final class CostumeRoomItem
+	static final class PohItem
 	{
 		final int itemId;
 		final String itemName;
 		final int quantity;
 
-		CostumeRoomItem(int itemId, String itemName, int quantity)
+		PohItem(int itemId, String itemName, int quantity)
+		{
+			this.itemId = itemId;
+			this.itemName = itemName;
+			this.quantity = quantity;
+		}
+	}
+
+	/** Same shape again, for the Forestry Kit's contents -- see
+	 * ForestryKitItem in the Mootrius/myscape repo's app/models.py for
+	 * the server side, and MyscapePlugin#readForestryKitItems for how
+	 * this is actually built. A genuine ItemContainer
+	 * (InventoryID.FORESTRY_KIT), read the same straightforward way as
+	 * Tackle Box/Seed Vault above, only reporting contents once the
+	 * player has actually opened it at least once this session (same
+	 * caveat as everywhere else here). Grouped under "PORTABLE" rather
+	 * than "PoH" on Possessions Monitoring -- it's carried, not house
+	 * storage. */
+	static final class ForestryKitItem
+	{
+		final int itemId;
+		final String itemName;
+		final int quantity;
+
+		ForestryKitItem(int itemId, String itemName, int quantity)
+		{
+			this.itemId = itemId;
+			this.itemName = itemName;
+			this.quantity = quantity;
+		}
+	}
+
+	/** Same shape again, for a Seed Box's contents -- see SeedBoxItem
+	 * in the Mootrius/myscape repo's app/models.py for the server side
+	 * (distinct from SeedVaultItem above), and
+	 * MyscapePlugin#readSeedBoxItems for how this is actually built. A
+	 * genuine ItemContainer (InventoryID.SEED_BOX), read the same
+	 * straightforward way as Tackle Box/Forestry Kit, only reporting
+	 * contents once the player has actually opened it at least once
+	 * this session. */
+	static final class SeedBoxItem
+	{
+		final int itemId;
+		final String itemName;
+		final int quantity;
+
+		SeedBoxItem(int itemId, String itemName, int quantity)
+		{
+			this.itemId = itemId;
+			this.itemName = itemName;
+			this.quantity = quantity;
+		}
+	}
+
+	/** Same shape again, for the Master Scroll Book's contents -- see
+	 * MasterScrollBookItem in the Mootrius/myscape repo's app/models.py
+	 * for the server side. Unlike every other source in this file,
+	 * there's no confirmed RuneLite gameval InventoryID/InterfaceID
+	 * constant for it -- thorough searching turned up nothing (see that
+	 * server-side docstring for the full account). Kept here, ready to
+	 * use, but nothing in MyscapePlugin actually builds one of these
+	 * yet: MyscapePlugin#onItemContainerChanged carries a temporary
+	 * diagnostic instead, logging any otherwise-unrecognized container
+	 * so the real one can be identified from a live client log --
+	 * exactly the same log-and-look approach that found the Costume
+	 * Room's real container id (33405) after its original six guessed
+	 * constants never fired. */
+	static final class MasterScrollBookItem
+	{
+		final int itemId;
+		final String itemName;
+		final int quantity;
+
+		MasterScrollBookItem(int itemId, String itemName, int quantity)
 		{
 			this.itemId = itemId;
 			this.itemName = itemName;
@@ -384,12 +460,14 @@ class MyscapeClient
 	/** Backs the side panel's Status section (see MyscapePanel's Status
 	 * card and fetchSyncStatus below) -- storages is keyed by the same
 	 * storage keys the server's own POSSESSION_STORAGE_KEYS uses ("bank",
-	 * "equipment", "inventory", "potion_storage", "seed_vault",
-	 * "rune_pouch", "looting_bag"), each value either an ISO-8601 instant
-	 * (that storage has synced at least once) or null (it never has --
-	 * see Player.storage_synced_at's own docstring server-side for why
-	 * that's a real, distinct state worth showing rather than just
-	 * inferring it from whether an item list happens to be empty). */
+	 * "equipment", "inventory", "potion_storage", "rune_pouch",
+	 * "seed_vault", "looting_bag", "tackle_box", "poh", "forestry_kit",
+	 * "master_scroll_book", "seed_box"), each value either an ISO-8601
+	 * instant (that storage has synced at least once) or null (it never
+	 * has -- see Player.storage_synced_at's own docstring server-side
+	 * for why that's a real, distinct state worth showing rather than
+	 * just inferring it from whether an item list happens to be
+	 * empty). */
 	interface SyncStatusCallback
 	{
 		void onSuccess(Map<String, String> storages);
@@ -714,14 +792,16 @@ class MyscapeClient
 		syncItems("/api/players/me/tackle-box", itemsJson, callback);
 	}
 
-	/** Same deal as syncBank, for the whole Costume Room's contents
-	 * (POST /api/players/me/costume-room) -- one endpoint covering all
-	 * six pieces of furniture now, not six separate ones (see
-	 * CostumeRoomItem's own comment above for why). */
-	void syncCostumeRoom(List<CostumeRoomItem> items, SyncCallback callback)
+	/** Same deal as syncBank, for the whole PoH Costume Room's contents
+	 * (POST /api/players/me/poh) -- one endpoint covering all six
+	 * pieces of furniture, not six separate ones (see PohItem's own
+	 * comment above for why). Path is "/poh", not "/costume-room" --
+	 * see PohItem's comment for why this is named PoH rather than
+	 * Costume Room. */
+	void syncPoh(List<PohItem> items, SyncCallback callback)
 	{
 		JsonArray itemsJson = new JsonArray();
-		for (CostumeRoomItem item : items)
+		for (PohItem item : items)
 		{
 			JsonObject itemJson = new JsonObject();
 			itemJson.addProperty("item_id", item.itemId);
@@ -729,7 +809,39 @@ class MyscapeClient
 			itemJson.addProperty("quantity", item.quantity);
 			itemsJson.add(itemJson);
 		}
-		syncItems("/api/players/me/costume-room", itemsJson, callback);
+		syncItems("/api/players/me/poh", itemsJson, callback);
+	}
+
+	/** Same deal as syncBank, for the Forestry Kit's contents (POST
+	 * /api/players/me/forestry-kit). */
+	void syncForestryKit(List<ForestryKitItem> items, SyncCallback callback)
+	{
+		JsonArray itemsJson = new JsonArray();
+		for (ForestryKitItem item : items)
+		{
+			JsonObject itemJson = new JsonObject();
+			itemJson.addProperty("item_id", item.itemId);
+			itemJson.addProperty("item_name", item.itemName);
+			itemJson.addProperty("quantity", item.quantity);
+			itemsJson.add(itemJson);
+		}
+		syncItems("/api/players/me/forestry-kit", itemsJson, callback);
+	}
+
+	/** Same deal as syncBank, for a Seed Box's contents (POST
+	 * /api/players/me/seed-box). */
+	void syncSeedBox(List<SeedBoxItem> items, SyncCallback callback)
+	{
+		JsonArray itemsJson = new JsonArray();
+		for (SeedBoxItem item : items)
+		{
+			JsonObject itemJson = new JsonObject();
+			itemJson.addProperty("item_id", item.itemId);
+			itemJson.addProperty("item_name", item.itemName);
+			itemJson.addProperty("quantity", item.quantity);
+			itemsJson.add(itemJson);
+		}
+		syncItems("/api/players/me/seed-box", itemsJson, callback);
 	}
 
 	/** Polls GET /api/players/me/sync-status (see app/main.py in the
@@ -954,8 +1066,8 @@ class MyscapeClient
 
 	/** Shared by every "current state" container sync above (syncBank,
 	 * syncInventory, syncEquipment, syncPotionStorage, syncRunePouch,
-	 * syncLootingBag, syncSeedVault, syncTackleBox, syncCostumeRoom,
-	 * ...)
+	 * syncLootingBag, syncSeedVault, syncTackleBox, syncPoh,
+	 * syncForestryKit, syncSeedBox, ...)
 	 * -- each POSTs an {"items": [...]} body to its own path and gets
 	 * back the same {"item_count": N} response, so this just wraps the
 	 * general syncPayload below with that one fixed field name. */

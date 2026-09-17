@@ -15,6 +15,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import javax.inject.Inject;
+import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Client;
 import net.runelite.api.EnumComposition;
 import net.runelite.api.EnumID;
@@ -73,6 +74,7 @@ import okhttp3.OkHttpClient;
  * the Mootrius/myscape repo's app/loot.py), which was already being
  * captured for the Loot Tracker feature before Mindmaps existed.
  */
+@Slf4j
 @PluginDescriptor(
 	name = "myscape",
 	description = "Links this client to your myscape.io account for purchase-goal and loot tracking.",
@@ -416,16 +418,36 @@ public class MyscapePlugin extends Plugin
 	// way as Looting Bag/Seed Vault above: null until the player has
 	// actually opened it at least once this session.
 	private volatile List<MyscapeClient.TackleBoxItem> latestTackleBoxItems;
-	// Same deal again, for the whole Costume Room's contents. Originally
-	// six separate fields, one per piece of furniture, each assumed to
-	// back its own ItemContainer -- live testing found every piece
-	// actually fires ItemContainerChanged on the same containerId
+	// Same deal again, for the whole PoH Costume Room's contents.
+	// Originally six separate fields, one per piece of furniture, each
+	// assumed to back its own ItemContainer -- live testing found every
+	// piece actually fires ItemContainerChanged on the same containerId
 	// (33405, not any of the InventoryID.POH_COSTUME_ROOM_* constants),
 	// with identical contents regardless of which piece was opened, so
 	// this is read and gated the same simple way as Looting Bag/Seed
 	// Vault/Tackle Box above: null until the player has actually opened
-	// the Costume Room interface at least once this session.
-	private volatile List<MyscapeClient.CostumeRoomItem> latestCostumeRoomItems;
+	// the Costume Room interface at least once this session. Named
+	// latestPohItems (not latestCostumeRoomItems) to match PohItem --
+	// see that class's own comment in MyscapeClient.java.
+	private volatile List<MyscapeClient.PohItem> latestPohItems;
+	// Same deal again, for the Forestry Kit's contents -- also a
+	// genuine ItemContainer (InventoryID.FORESTRY_KIT), read and gated
+	// the same way as Looting Bag/Seed Vault/Tackle Box above: null
+	// until the player has actually opened it at least once this
+	// session.
+	private volatile List<MyscapeClient.ForestryKitItem> latestForestryKitItems;
+	// Same deal again, for a Seed Box's contents -- also a genuine
+	// ItemContainer (InventoryID.SEED_BOX), read and gated the same
+	// way as Looting Bag/Seed Vault/Tackle Box/Forestry Kit above: null
+	// until the player has actually opened it at least once this
+	// session. Distinct from the Seed Vault above -- see SeedBoxItem's
+	// own comment in MyscapeClient.java. There is deliberately no
+	// latestMasterScrollBookItems field alongside this one: unlike
+	// every other source here, the Master Scroll Book has no confirmed
+	// container id to read yet (see MasterScrollBookItem's own comment
+	// in MyscapeClient.java) -- see the temporary diagnostic in
+	// onItemContainerChanged below instead.
+	private volatile List<MyscapeClient.SeedBoxItem> latestSeedBoxItems;
 	// Same deal, for skills/quests/diaries -- unlike Potion Storage/Rune
 	// Pouch, though, these are never left null for long once logged in:
 	// see onGameTick's justBecameAvailable block, which reads all three
@@ -502,7 +524,9 @@ public class MyscapePlugin extends Plugin
 		latestLootingBagItems = null;
 		latestSeedVaultItems = null;
 		latestTackleBoxItems = null;
-		latestCostumeRoomItems = null;
+		latestPohItems = null;
+		latestForestryKitItems = null;
+		latestSeedBoxItems = null;
 		latestSkillItems = null;
 		latestCompletedQuestNames = null;
 		latestDiaryTierItems = null;
@@ -648,7 +672,7 @@ public class MyscapePlugin extends Plugin
 		return items;
 	}
 
-	/** The whole Costume Room also genuinely is an ItemContainer --
+	/** The whole PoH Costume Room also genuinely is an ItemContainer --
 	 * read the exact same straightforward way as Looting Bag/Seed
 	 * Vault/Tackle Box above, only reporting contents once the player
 	 * has actually opened the Costume Room interface at least once
@@ -662,13 +686,47 @@ public class MyscapePlugin extends Plugin
 	 * methods checked for) with identical contents regardless of which
 	 * piece was opened, so this collapses back down to the same simple
 	 * single-container pattern as readTackleBoxItems above -- no
-	 * per-page merging needed. */
-	private List<MyscapeClient.CostumeRoomItem> readCostumeRoomItems(ItemContainer costumeRoom)
+	 * per-page merging needed. Named readPohItems (not
+	 * readCostumeRoomItems) to match PohItem -- see that class's own
+	 * comment in MyscapeClient.java. */
+	private List<MyscapeClient.PohItem> readPohItems(ItemContainer poh)
 	{
-		List<MyscapeClient.CostumeRoomItem> items = new ArrayList<>();
-		for (Map.Entry<Integer, Integer> entry : aggregateQuantities(costumeRoom).entrySet())
+		List<MyscapeClient.PohItem> items = new ArrayList<>();
+		for (Map.Entry<Integer, Integer> entry : aggregateQuantities(poh).entrySet())
 		{
-			items.add(new MyscapeClient.CostumeRoomItem(entry.getKey(), resolveItemName(entry.getKey()), entry.getValue()));
+			items.add(new MyscapeClient.PohItem(entry.getKey(), resolveItemName(entry.getKey()), entry.getValue()));
+		}
+		return items;
+	}
+
+	/** The Forestry Kit also genuinely is an ItemContainer
+	 * (InventoryID.FORESTRY_KIT), same as the Looting Bag/Seed Vault/
+	 * Tackle Box above -- read the exact same straightforward way,
+	 * only reporting contents once the player has actually opened it
+	 * at least once this session. */
+	private List<MyscapeClient.ForestryKitItem> readForestryKitItems(ItemContainer forestryKit)
+	{
+		List<MyscapeClient.ForestryKitItem> items = new ArrayList<>();
+		for (Map.Entry<Integer, Integer> entry : aggregateQuantities(forestryKit).entrySet())
+		{
+			items.add(new MyscapeClient.ForestryKitItem(entry.getKey(), resolveItemName(entry.getKey()), entry.getValue()));
+		}
+		return items;
+	}
+
+	/** A Seed Box also genuinely is an ItemContainer
+	 * (InventoryID.SEED_BOX), same as the Looting Bag/Seed Vault/
+	 * Tackle Box/Forestry Kit above -- read the exact same
+	 * straightforward way, only reporting contents once the player
+	 * has actually opened it at least once this session. Distinct
+	 * from the Seed Vault above -- see SeedBoxItem's own comment in
+	 * MyscapeClient.java. */
+	private List<MyscapeClient.SeedBoxItem> readSeedBoxItems(ItemContainer seedBox)
+	{
+		List<MyscapeClient.SeedBoxItem> items = new ArrayList<>();
+		for (Map.Entry<Integer, Integer> entry : aggregateQuantities(seedBox).entrySet())
+		{
+			items.add(new MyscapeClient.SeedBoxItem(entry.getKey(), resolveItemName(entry.getKey()), entry.getValue()));
 		}
 		return items;
 	}
@@ -986,7 +1044,7 @@ public class MyscapePlugin extends Plugin
 	}
 
 	// The whole Costume Room's contents (every piece of furniture
-	// combined -- see CostumeRoomItem's own comment above) live behind
+	// combined -- see PohItem's own comment above) live behind
 	// this one dynamically-assigned containerId. It's not one of
 	// RuneLite's named InventoryID constants -- gameval only names the
 	// fixed, game-load-time-assigned containers, while this one is
@@ -1050,12 +1108,36 @@ public class MyscapePlugin extends Plugin
 		{
 			latestTackleBoxItems = readTackleBoxItems(container);
 		}
+		else if (containerId == InventoryID.FORESTRY_KIT)
+		{
+			latestForestryKitItems = readForestryKitItems(container);
+		}
+		else if (containerId == InventoryID.SEED_BOX)
+		{
+			latestSeedBoxItems = readSeedBoxItems(container);
+		}
 		else if (containerId == POH_COSTUME_ROOM_CONTAINER_ID)
 		{
-			latestCostumeRoomItems = readCostumeRoomItems(container);
+			latestPohItems = readPohItems(container);
 		}
 		else
 		{
+			// TEMPORARY DIAGNOSTIC for the Master Scroll Book -- see
+			// MasterScrollBookItem's own comment in MyscapeClient.java
+			// for why this exists: unlike every other source in this
+			// file, no RuneLite gameval InventoryID constant for it
+			// could be confirmed via research. Rather than guess --
+			// exactly the mistake that shipped six wrong constants for
+			// the Costume Room before this same log-and-look approach
+			// found its real container id (33405) -- this logs every
+			// otherwise-unrecognized container's id and slot count, so
+			// the real one can be read straight off the client log the
+			// next time someone with this build installed opens their
+			// Master Scroll Book. Remove this branch once
+			// MASTER_SCROLL_BOOK_CONTAINER_ID is confirmed and wired up
+			// for real, the same way POH_COSTUME_ROOM_CONTAINER_ID was.
+			log.info("[myscape] unrecognized ItemContainerChanged: containerId={}, size={}",
+				containerId, container.size());
 			return;
 		}
 
@@ -1266,7 +1348,7 @@ public class MyscapePlugin extends Plugin
 
 	/** (Re)schedules the single shared debounce task -- shared across
 	 * bank/inventory/equipment/potion storage/rune pouch/looting bag/
-	 * seed vault/tackle box/the Costume Room/skills/quests/diaries
+	 * seed vault/tackle box/PoH/Forestry Kit/Seed Box/skills/quests/diaries
 	 * rather than one per source, since
 	 * a player actively shopping or grinding typically touches more
 	 * than one of them in the same burst (withdrawing from the bank,
@@ -1310,7 +1392,8 @@ public class MyscapePlugin extends Plugin
 					panel.syncInBackground(
 						latestBankItems, latestInventoryItems, latestEquipmentItems,
 						latestPotionStorageItems, latestRunePouchItems, latestLootingBagItems,
-						latestSeedVaultItems, latestTackleBoxItems, latestCostumeRoomItems,
+						latestSeedVaultItems, latestTackleBoxItems, latestPohItems,
+						latestForestryKitItems, latestSeedBoxItems,
 						latestSkillItems, latestCompletedQuestNames, latestDiaryTierItems);
 				}
 			},

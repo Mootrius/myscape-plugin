@@ -57,10 +57,14 @@ class MyscapePanel extends PluginPanel
 	// app/schemas.py), which is also what GET /api/players/me/sync-status
 	// (fetchSyncStatus below) reports back keyed by. More storages will
 	// likely join this list later -- nothing here assumes exactly
-	// nine.
+	// twelve. "master_scroll_book" in particular will keep showing "Not
+	// synced yet" here for a while -- nothing in MyscapePlugin actually
+	// syncs it yet (see MasterScrollBookItem's own comment in
+	// MyscapeClient.java for why), same as any other listed storage
+	// that simply hasn't been wired up to sync at all yet.
 	private static final String[] STATUS_STORAGE_KEYS = {
 		"bank", "equipment", "inventory", "potion_storage", "seed_vault", "rune_pouch", "looting_bag",
-		"tackle_box", "costume_room",
+		"tackle_box", "poh", "forestry_kit", "master_scroll_book", "seed_box",
 	};
 	private static final Map<String, String> STATUS_STORAGE_LABELS = buildStatusStorageLabels();
 
@@ -75,7 +79,10 @@ class MyscapePanel extends PluginPanel
 		labels.put("rune_pouch", "Rune Pouch");
 		labels.put("looting_bag", "Looting Bag");
 		labels.put("tackle_box", "Tackle Box");
-		labels.put("costume_room", "Costume Room");
+		labels.put("poh", "PoH");
+		labels.put("forestry_kit", "Forestry Kit");
+		labels.put("master_scroll_book", "Master Scroll Book");
+		labels.put("seed_box", "Seed Box");
 		return Collections.unmodifiableMap(labels);
 	}
 
@@ -128,7 +135,9 @@ class MyscapePanel extends PluginPanel
 	private Integer lastLootingBagItemCount;
 	private Integer lastSeedVaultItemCount;
 	private Integer lastTackleBoxItemCount;
-	private Integer lastCostumeRoomItemCount;
+	private Integer lastPohItemCount;
+	private Integer lastForestryKitItemCount;
+	private Integer lastSeedBoxItemCount;
 	// Same deal, for skills/completed quests/diary tiers -- the size of
 	// the most recently confirmed snapshot for each, same reasoning as
 	// the five item-source counts above (and reset alongside them in
@@ -368,7 +377,9 @@ class MyscapePanel extends PluginPanel
 		lastLootingBagItemCount = null;
 		lastSeedVaultItemCount = null;
 		lastTackleBoxItemCount = null;
-		lastCostumeRoomItemCount = null;
+		lastPohItemCount = null;
+		lastForestryKitItemCount = null;
+		lastSeedBoxItemCount = null;
 		lastLootEventCount = null;
 		lastSkillCount = null;
 		lastQuestCount = null;
@@ -463,8 +474,8 @@ class MyscapePanel extends PluginPanel
 
 	/** Called by the plugin (see MyscapePlugin#scheduleSyncDebounced),
 	 * off the EDT, once bank/inventory/equipment/potion storage/rune
-	 * pouch/looting bag/seed vault/tackle box/the six Costume Room
-	 * storages/skills/quests/diaries have settled after a change --
+	 * pouch/looting bag/seed vault/tackle box/PoH/Forestry Kit/Seed Box/
+	 * skills/quests/diaries have settled after a change --
 	 * syncs whichever of these
 	 * have actually been observed this session (any
 	 * argument may be null; see the field docs on MyscapePlugin's
@@ -488,7 +499,9 @@ class MyscapePanel extends PluginPanel
 		List<MyscapeClient.LootingBagItem> lootingBagItems,
 		List<MyscapeClient.SeedVaultItem> seedVaultItems,
 		List<MyscapeClient.TackleBoxItem> tackleBoxItems,
-		List<MyscapeClient.CostumeRoomItem> costumeRoomItems,
+		List<MyscapeClient.PohItem> pohItems,
+		List<MyscapeClient.ForestryKitItem> forestryKitItems,
+		List<MyscapeClient.SeedBoxItem> seedBoxItems,
 		List<MyscapeClient.SkillItem> skillItems,
 		List<String> completedQuestNames,
 		List<MyscapeClient.DiaryTierItem> diaryTierItems)
@@ -525,9 +538,17 @@ class MyscapePanel extends PluginPanel
 		{
 			client.syncTackleBox(tackleBoxItems, syncCallback("tackle_box", count -> lastTackleBoxItemCount = count));
 		}
-		if (costumeRoomItems != null)
+		if (pohItems != null)
 		{
-			client.syncCostumeRoom(costumeRoomItems, syncCallback("costume_room", count -> lastCostumeRoomItemCount = count));
+			client.syncPoh(pohItems, syncCallback("poh", count -> lastPohItemCount = count));
+		}
+		if (forestryKitItems != null)
+		{
+			client.syncForestryKit(forestryKitItems, syncCallback("forestry_kit", count -> lastForestryKitItemCount = count));
+		}
+		if (seedBoxItems != null)
+		{
+			client.syncSeedBox(seedBoxItems, syncCallback("seed_box", count -> lastSeedBoxItemCount = count));
 		}
 		if (skillItems != null)
 		{
@@ -772,9 +793,17 @@ class MyscapePanel extends PluginPanel
 		{
 			parts.add(lastTackleBoxItemCount + " tackle box");
 		}
-		if (lastCostumeRoomItemCount != null)
+		if (lastPohItemCount != null)
 		{
-			parts.add(lastCostumeRoomItemCount + " costume room");
+			parts.add(lastPohItemCount + " poh");
+		}
+		if (lastForestryKitItemCount != null)
+		{
+			parts.add(lastForestryKitItemCount + " forestry kit");
+		}
+		if (lastSeedBoxItemCount != null)
+		{
+			parts.add(lastSeedBoxItemCount + " seed box");
 		}
 		if (lastSkillCount != null)
 		{
