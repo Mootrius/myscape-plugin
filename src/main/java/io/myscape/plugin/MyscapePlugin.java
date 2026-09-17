@@ -36,6 +36,7 @@ import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.gameval.InventoryID;
 import net.runelite.api.gameval.ItemID;
 import net.runelite.api.gameval.VarbitID;
+import net.runelite.api.widgets.Widget;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.game.ItemManager;
@@ -459,26 +460,25 @@ public class MyscapePlugin extends Plugin
 	private volatile List<String> latestCompletedQuestNames;
 	private volatile List<MyscapeClient.DiaryTierItem> latestDiaryTierItems;
 
-	// TEMPORARY DIAGNOSTIC for the Master Scroll Book, take two: the
-	// onItemContainerChanged diagnostic below never caught it (the
-	// user's own client log showed only container 520, a completely
-	// unrelated, already-named RuneLite constant --
-	// InventoryID.TRADINGPOST_SELL_2, from Grand Exchange activity),
-	// meaning the Master Scroll Book genuinely never fires
-	// ItemContainerChanged at all; it likely isn't backed by a
-	// standard ItemContainer the way every other source here is. This
-	// widens the net to the widget layer instead: onWidgetLoaded below
-	// now also logs each newly-seen interface group id, once per group
-	// per session (deduped via this set) rather than on every single
-	// load -- a full unfiltered widget-load log was ruled out earlier
-	// as far too noisy (chat, minimap, tab switches all fire it
-	// constantly), but deduping bounds the output by how many distinct
-	// interfaces get opened this session, not how many times. The
-	// resulting list, cross-referenced against RuneLite's own
-	// InterfaceID constants, should narrow down which group id is the
-	// Master Scroll Book. Remove this field and the logging in
-	// onWidgetLoaded once that id is confirmed and wired up for real.
-	private final Set<Integer> seenWidgetGroups = new HashSet<>();
+	// TEMPORARY DIAGNOSTIC for the Master Scroll Book, take three: the
+	// previous (deduped widget-group) diagnostic did its job --
+	// InterfaceID.BOOKOFSCROLLS (597) loaded exactly once, right when
+	// the Master Scroll Book was opened, and its own gameval source
+	// (InterfaceID.Bookofscrolls' nested constants -- TELEPORTSCROLL_
+	// NARDAH, _DIGSITE, and so on for all 20 teleport types) confirms
+	// this really is the right interface, not a guess. What's still
+	// unknown is HOW it represents "unlocked" -- itemId, hidden state,
+	// text, some combination -- so onWidgetLoaded below now dumps
+	// every child widget's key properties the moment this interface
+	// loads, the same log-and-look approach that found
+	// POH_COSTUME_ROOM_CONTAINER_ID and InterfaceID.BOOKOFSCROLLS
+	// itself. This flag defers a second dump to the very next game
+	// tick after the first, in case the interface's own script
+	// populates these widgets a moment after they're first created
+	// rather than immediately. Remove this field and
+	// logBookOfScrollsWidgets once the real read logic is written and
+	// wired up, the same way every other source here was.
+	private volatile boolean bookOfScrollsDumpPending;
 
 	@Provides
 	MyscapeConfig provideConfig(ConfigManager configManager)
@@ -551,7 +551,7 @@ public class MyscapePlugin extends Plugin
 		latestSkillItems = null;
 		latestCompletedQuestNames = null;
 		latestDiaryTierItems = null;
-		seenWidgetGroups.clear();
+		bookOfScrollsDumpPending = false;
 	}
 
 	/** Aggregates a container's raw slots by item id -- necessary (not
@@ -1144,22 +1144,11 @@ public class MyscapePlugin extends Plugin
 		}
 		else
 		{
-			// TEMPORARY DIAGNOSTIC for the Master Scroll Book -- see
-			// MasterScrollBookItem's own comment in MyscapeClient.java
-			// for why this exists: unlike every other source in this
-			// file, no RuneLite gameval InventoryID constant for it
-			// could be confirmed via research. Rather than guess --
-			// exactly the mistake that shipped six wrong constants for
-			// the Costume Room before this same log-and-look approach
-			// found its real container id (33405) -- this logs every
-			// otherwise-unrecognized container's id and slot count, so
-			// the real one can be read straight off the client log the
-			// next time someone with this build installed opens their
-			// Master Scroll Book. Remove this branch once
-			// MASTER_SCROLL_BOOK_CONTAINER_ID is confirmed and wired up
-			// for real, the same way POH_COSTUME_ROOM_CONTAINER_ID was.
-			log.info("[myscape] unrecognized ItemContainerChanged: containerId={}, size={}",
-				containerId, container.size());
+			// The Master Scroll Book was the reason this branch used to
+			// carry a temporary diagnostic -- confirmed by that
+			// diagnostic to genuinely never fire ItemContainerChanged at
+			// all (see bookOfScrollsDumpPending's field doc below for the
+			// full story), so there's nothing left here to catch.
 			return;
 		}
 
@@ -1331,7 +1320,7 @@ public class MyscapePlugin extends Plugin
 	 * same division of labor as onVarbitChanged/readDiaryTiers below.
 	 *
 	 * Also carries the temporary Master Scroll Book diagnostic -- see
-	 * seenWidgetGroups' own comment for the full story. */
+	 * bookOfScrollsDumpPending's own comment for the full story. */
 	@Subscribe
 	public void onWidgetLoaded(WidgetLoaded event)
 	{
@@ -1342,10 +1331,36 @@ public class MyscapePlugin extends Plugin
 		}
 
 		// TEMPORARY DIAGNOSTIC for the Master Scroll Book -- see
-		// seenWidgetGroups' own comment above for why this exists.
-		if (seenWidgetGroups.add(groupId))
+		// bookOfScrollsDumpPending's own comment above for why this
+		// exists. Dumped once right away, and once more next tick (see
+		// onGameTick below) in case these widgets populate a moment
+		// after the interface itself loads.
+		if (groupId == InterfaceID.BOOKOFSCROLLS)
 		{
-			log.info("[myscape] widget group loaded (first time this session): groupId={}", groupId);
+			logBookOfScrollsWidgets();
+			bookOfScrollsDumpPending = true;
+		}
+	}
+
+	/** TEMPORARY DIAGNOSTIC for the Master Scroll Book -- see
+	 * bookOfScrollsDumpPending's own comment for the full story. Walks
+	 * every child component of InterfaceID.BOOKOFSCROLLS (0 through
+	 * 0x54, the full range of InterfaceID.Bookofscrolls' own nested
+	 * constants -- UNIVERSE through TITLE_ARDEAGLAIS) rather than
+	 * hand-picking the 20 TELEPORTSCROLL_* ones, so nothing about how
+	 * "unlocked" is actually represented (itemId, hidden state, text,
+	 * some combination) has to be guessed at ahead of seeing it live. */
+	private void logBookOfScrollsWidgets()
+	{
+		for (int childId = 0; childId <= 0x54; childId++)
+		{
+			Widget widget = client.getWidget(InterfaceID.BOOKOFSCROLLS, childId);
+			if (widget == null)
+			{
+				continue;
+			}
+			log.info("[myscape] BOOKOFSCROLLS child={} itemId={} itemQty={} hidden={} text=\"{}\"",
+				childId, widget.getItemId(), widget.getItemQuantity(), widget.isHidden(), widget.getText());
 		}
 	}
 
@@ -1512,6 +1527,18 @@ public class MyscapePlugin extends Plugin
 				diariesDirty = false;
 				latestDiaryTierItems = readDiaryTiers();
 				scheduleSyncDebounced();
+			}
+
+			// TEMPORARY DIAGNOSTIC for the Master Scroll Book -- see
+			// bookOfScrollsDumpPending's own comment above for why this
+			// exists. Not folded into scheduleSyncDebounced/the dirty-flag
+			// pattern above like every real source -- this never syncs
+			// anything, it just logs once more, one tick after
+			// onWidgetLoaded's own immediate dump.
+			if (bookOfScrollsDumpPending)
+			{
+				bookOfScrollsDumpPending = false;
+				logBookOfScrollsWidgets();
 			}
 
 			// onGameStateChanged (below) fires the instant the game
