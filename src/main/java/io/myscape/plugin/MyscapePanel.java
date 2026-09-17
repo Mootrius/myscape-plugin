@@ -200,17 +200,19 @@ class MyscapePanel extends PluginPanel
 
 	/** The small row of icon-only social links directly under the
 	 * wordmark, shown above every card the same way the wordmark itself
-	 * is (see the constructor) -- GitHub, Discord, then Patreon, left to
-	 * right. A plain FlowLayout.CENTER is fine for this row's own
-	 * internal layout (unlike the outer cards, it isn't trying to
-	 * stretch anything to fill available width, just lay three small
-	 * buttons out side by side at their natural size), it only needed
-	 * GridBagLayout help one level up, in the constructor, to actually
-	 * get centered within the sidebar's true width in the first place. */
+	 * is (see the constructor) -- the site itself, then GitHub, Discord,
+	 * and Patreon, left to right. A plain FlowLayout.CENTER is fine for
+	 * this row's own internal layout (unlike the outer cards, it isn't
+	 * trying to stretch anything to fill available width, just lay four
+	 * small buttons out side by side at their natural size), it only
+	 * needed GridBagLayout help one level up, in the constructor, to
+	 * actually get centered within the sidebar's true width in the
+	 * first place. */
 	private JPanel buildSocialLinksRow()
 	{
 		JPanel row = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 0));
 		row.setOpaque(false);
+		row.add(buildSocialButton("myscape_home.png", "myscape.io", "https://myscape.io"));
 		row.add(buildSocialButton("github.png", "GitHub", "https://github.com/Mootrius/myscape-plugin"));
 		row.add(buildSocialButton("discord.png", "Discord", "https://discord.gg/myscape"));
 		row.add(buildSocialButton("patreon.png", "Patreon", "https://patreon.com/myscape"));
