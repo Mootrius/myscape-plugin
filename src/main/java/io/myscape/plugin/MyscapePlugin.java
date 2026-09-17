@@ -116,6 +116,24 @@ public class MyscapePlugin extends Plugin
 	// website says otherwise.
 	private static final int LINK_STATUS_POLL_SECONDS = 30;
 
+	// The 30-second baseline above is deliberately loose -- it runs for
+	// every connected client regardless of whether anyone's even looking
+	// at this panel right now, so it has to stay cheap at scale. But
+	// staying loose is exactly what made an Unlink clicked on the
+	// website feel laggy to notice here: the site's own mirror-image
+	// poller (the footer's unlinkPollInterval in app/pages.py, for the
+	// opposite direction) runs every 3 seconds, so unlinking from the
+	// plugin reads as near-instant on the website while unlinking from
+	// the website could sit showing "Linked" here for up to half a
+	// minute. This is that same 3-second cadence, but only ever running
+	// while the player actually has this panel open (see
+	// MyscapePanel#onActivate/onDeactivate below, which start and stop
+	// it) -- the baseline poll above still covers everyone else, so
+	// this doesn't multiply the steady-state request volume, just gives
+	// whoever's actively looking at "Linked as X" the same near-instant
+	// feedback the website already has.
+	private static final int LINK_STATUS_ACTIVE_POLL_SECONDS = 3;
+
 	// A container's ItemContainer fires a change event for every single
 	// deposit/withdraw/equip, not just once the player's done -- syncing
 	// on every one of those would mean several requests a second while
@@ -359,6 +377,11 @@ public class MyscapePlugin extends Plugin
 	private MyscapePanel panel;
 	private NavigationButton navButton;
 	private ScheduledFuture<?> linkStatusPollTask;
+	// Only non-null while the panel is the active sidebar tab -- see
+	// onPanelActivated/onPanelDeactivated below, and
+	// LINK_STATUS_ACTIVE_POLL_SECONDS' own comment for why this exists
+	// alongside linkStatusPollTask rather than replacing it.
+	private ScheduledFuture<?> activeLinkStatusPollTask;
 	private ScheduledFuture<?> syncDebounceTask;
 
 	// When the current debounce burst started (see scheduleSyncDebounced
@@ -511,6 +534,50 @@ public class MyscapePlugin extends Plugin
 			LINK_STATUS_POLL_SECONDS, LINK_STATUS_POLL_SECONDS, TimeUnit.SECONDS);
 	}
 
+	/** Called by MyscapePanel#onActivate whenever it becomes the
+	 * sidebar's visible tab (opening it fresh, or switching back to it
+	 * from another plugin's panel) -- starts the faster
+	 * LINK_STATUS_ACTIVE_POLL_SECONDS poll for as long as it stays the
+	 * one showing, on top of (not instead of) the slow baseline poll
+	 * from startUp() above. Fires an immediate check first (zero
+	 * initial delay) rather than waiting out the first interval, so
+	 * reopening the panel after unlinking elsewhere doesn't sit showing
+	 * stale "Linked" state for up to another 3 seconds on top of
+	 * whatever it already missed while closed. Guarded against already
+	 * running so a stray extra onActivate (RuneLite's own, not
+	 * something this plugin causes deliberately) can't stack a second
+	 * poll on top of the first. */
+	void onPanelActivated()
+	{
+		if (activeLinkStatusPollTask != null)
+		{
+			return;
+		}
+		activeLinkStatusPollTask = executor.scheduleWithFixedDelay(
+			() -> {
+				if (panel != null)
+				{
+					panel.recheckLinkStatusInBackground();
+					panel.refreshSyncStatusInBackground();
+				}
+			},
+			0, LINK_STATUS_ACTIVE_POLL_SECONDS, TimeUnit.SECONDS);
+	}
+
+	/** Called by MyscapePanel#onDeactivate whenever it stops being the
+	 * sidebar's visible tab (switching to a different plugin's panel,
+	 * or closing the sidebar outright) -- stops the faster poll started
+	 * by onPanelActivated above, leaving just the slow baseline poll
+	 * running for as long as the plugin stays enabled. */
+	void onPanelDeactivated()
+	{
+		if (activeLinkStatusPollTask != null)
+		{
+			activeLinkStatusPollTask.cancel(false);
+			activeLinkStatusPollTask = null;
+		}
+	}
+
 	@Override
 	protected void shutDown()
 	{
@@ -518,6 +585,11 @@ public class MyscapePlugin extends Plugin
 		{
 			linkStatusPollTask.cancel(false);
 			linkStatusPollTask = null;
+		}
+		if (activeLinkStatusPollTask != null)
+		{
+			activeLinkStatusPollTask.cancel(false);
+			activeLinkStatusPollTask = null;
 		}
 		if (syncDebounceTask != null)
 		{

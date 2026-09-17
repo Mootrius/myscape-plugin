@@ -178,6 +178,35 @@ class MyscapePanel extends PluginPanel
 		cards.show(cardPanel, CARD_CHECKING);
 	}
 
+	/** Fires every time this becomes the sidebar's visible tab -- first
+	 * opening it, or switching back to it from another plugin's panel
+	 * (RuneLite calls this via the Activatable interface PluginPanel
+	 * implements, not something this class schedules itself). Starts
+	 * MyscapePlugin's faster link-status poll for as long as a player's
+	 * actually looking at this panel -- see
+	 * MyscapePlugin#onPanelActivated and LINK_STATUS_ACTIVE_POLL_SECONDS'
+	 * own comment for why that's a separate, faster poll rather than
+	 * just tightening the one MyscapePlugin#startUp already runs for
+	 * everyone. */
+	@Override
+	public void onActivate()
+	{
+		super.onActivate();
+		plugin.onPanelActivated();
+	}
+
+	/** The other half of onActivate above -- fires when this stops being
+	 * the visible tab, whether that's switching to a different plugin's
+	 * panel or closing the sidebar outright while this one was showing.
+	 * Stops the faster poll onActivate started, same as if the player
+	 * had never opened this panel at all. */
+	@Override
+	public void onDeactivate()
+	{
+		super.onDeactivate();
+		plugin.onPanelDeactivated();
+	}
+
 	/** The plugin's own copy of the site's text wordmark -- myscape.io
 	 * itself uses plain gold text rather than an image for its logo (see
 	 * .logo in app/static/css/myscape.css), so this matches that exactly
