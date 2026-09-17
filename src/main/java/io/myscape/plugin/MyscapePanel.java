@@ -253,7 +253,7 @@ class MyscapePanel extends PluginPanel
 	{
 		JPanel panel = new JPanel();
 		panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
-		JLabel label = new JLabel("<html>Please log in to start.</html>");
+		JLabel label = new JLabel("<html>Log in to start.</html>");
 		label.setAlignmentX(Component.CENTER_ALIGNMENT);
 		label.setHorizontalAlignment(SwingConstants.CENTER);
 		panel.add(label);
@@ -265,12 +265,33 @@ class MyscapePanel extends PluginPanel
 	 * and the LINK button both need to be reliably centered, and
 	 * BoxLayout's per-child alignment/maximum-size tricks turned out not
 	 * to be trustworthy for that (see buildLinkedCard()'s own doc
-	 * comment for the real debug numbers that showed it failing). */
+	 * comment for the real debug numbers that showed it failing).
+	 *
+	 * Two more things this card needs that a naive GridBagLayout column
+	 * doesn't give for free:
+	 *
+	 * 1. JLabel#setHorizontalAlignment is unreliable on HTML content that
+	 *    wraps to multiple lines -- Swing's HTML renderer lays each line
+	 *    out flush left regardless of that property. Centering multi-line
+	 *    HTML text requires the alignment to be in the HTML itself.
+	 *
+	 * 2. cardPanel (the CardLayout host in the constructor) sizes itself
+	 *    to the tallest of its four cards, and CardLayout always stretches
+	 *    whichever card is showing to fill that full height. With every
+	 *    row here at its default weighty of 0, GridBagLayout would treat
+	 *    the whole intro/code/button/error block as one unit and center
+	 *    it in that leftover height (the same "extra space split evenly
+	 *    around the grid" behavior noted on buildLinkedCard() below, just
+	 *    on the vertical axis) -- which visibly pushed this short card's
+	 *    content well below where it belongs whenever a taller card (like
+	 *    the linked view) set cardPanel's height. Giving the last row
+	 *    weighty=1 with anchor=NORTH instead collects all of that leftover
+	 *    space below the real content, pinning the block to the top. */
 	private JPanel buildLinkCard()
 	{
 		JPanel panel = new JPanel(new GridBagLayout());
 
-		JLabel intro = new JLabel("<html>Please enter your code from myscape.io</html>");
+		JLabel intro = new JLabel("<html><div style='text-align: center;'>Enter your code from myscape.io</div></html>");
 		intro.setHorizontalAlignment(SwingConstants.CENTER);
 		GridBagConstraints introConstraints = new GridBagConstraints();
 		introConstraints.gridx = 0;
@@ -304,9 +325,10 @@ class MyscapePanel extends PluginPanel
 		GridBagConstraints errorConstraints = new GridBagConstraints();
 		errorConstraints.gridx = 0;
 		errorConstraints.gridy = 3;
-		errorConstraints.anchor = GridBagConstraints.WEST;
+		errorConstraints.anchor = GridBagConstraints.NORTH;
 		errorConstraints.fill = GridBagConstraints.HORIZONTAL;
 		errorConstraints.weightx = 1.0;
+		errorConstraints.weighty = 1.0;
 		errorConstraints.insets = new Insets(6, 0, 0, 0);
 		panel.add(linkErrorLabel, errorConstraints);
 
