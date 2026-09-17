@@ -119,6 +119,13 @@ class MyscapePanel extends PluginPanel
 
 	private boolean showingLinked;
 
+	// TEMPORARY -- for diagnosing the button/table left-wall alignment
+	// issue only; see the debug print at the end of showLinked() below.
+	// Remove these two fields and that print once the real cause is
+	// found and fixed for good.
+	private JPanel debugUnlinkButtonRow;
+	private JPanel debugStatusTable;
+
 	MyscapePanel(MyscapeClient client, MyscapePlugin plugin)
 	{
 		this.client = client;
@@ -235,6 +242,7 @@ class MyscapePanel extends PluginPanel
 		unlinkButtonRow.setMaximumSize(new Dimension(Integer.MAX_VALUE, unlinkButtonRow.getPreferredSize().height));
 		unlinkButtonRow.add(unlinkButton);
 		panel.add(unlinkButtonRow);
+		debugUnlinkButtonRow = unlinkButtonRow; // TEMPORARY, see the field doc above
 
 		unlinkErrorLabel.setForeground(ColorScheme.PROGRESS_ERROR_COLOR);
 		unlinkErrorLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
@@ -243,7 +251,9 @@ class MyscapePanel extends PluginPanel
 		panel.add(unlinkErrorLabel);
 
 		panel.add(Box.createRigidArea(new Dimension(0, 14)));
-		panel.add(buildStatusTable());
+		JPanel statusTable = buildStatusTable();
+		panel.add(statusTable);
+		debugStatusTable = statusTable; // TEMPORARY, see the field doc above
 
 		return panel;
 	}
@@ -416,6 +426,25 @@ class MyscapePanel extends PluginPanel
 			renderStatusRow(key);
 		}
 		refreshSyncStatusInBackground();
+
+		// TEMPORARY DEBUG -- prints real on-screen pixel bounds so we can
+		// see what's actually happening instead of guessing further; see
+		// the field doc on debugUnlinkButtonRow/debugStatusTable above.
+		// Remove this whole block once the alignment issue is found and
+		// fixed for good. Double invokeLater so this runs one full EDT
+		// cycle after cards.show() above, after layout has actually
+		// settled rather than mid-transition.
+		SwingUtilities.invokeLater(() -> SwingUtilities.invokeLater(() -> {
+			System.err.println("[myscape-debug] MyscapePanel.getWidth()=" + getWidth()
+				+ " getInsets()=" + getInsets());
+			System.err.println("[myscape-debug] linkedNameLabel.getBounds()=" + linkedNameLabel.getBounds());
+			System.err.println("[myscape-debug] unlinkButton.getBounds()=" + unlinkButton.getBounds());
+			System.err.println("[myscape-debug] unlinkButtonRow.getBounds()=" + (debugUnlinkButtonRow == null ? "null" : debugUnlinkButtonRow.getBounds())
+				+ " parent.getWidth()=" + (debugUnlinkButtonRow == null || debugUnlinkButtonRow.getParent() == null ? "null" : debugUnlinkButtonRow.getParent().getWidth()));
+			System.err.println("[myscape-debug] statusTable.getBounds()=" + (debugStatusTable == null ? "null" : debugStatusTable.getBounds())
+				+ " parent.getWidth()=" + (debugStatusTable == null || debugStatusTable.getParent() == null ? "null" : debugStatusTable.getParent().getWidth())
+				+ " preferredSize=" + (debugStatusTable == null ? "null" : debugStatusTable.getPreferredSize()));
+		}));
 	}
 
 	private void onLinkClicked(ActionEvent event)
