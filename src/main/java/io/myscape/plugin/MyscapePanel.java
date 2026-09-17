@@ -57,11 +57,10 @@ class MyscapePanel extends PluginPanel
 	// app/schemas.py), which is also what GET /api/players/me/sync-status
 	// (fetchSyncStatus below) reports back keyed by. More storages will
 	// likely join this list later -- nothing here assumes exactly
-	// fourteen.
+	// nine.
 	private static final String[] STATUS_STORAGE_KEYS = {
 		"bank", "equipment", "inventory", "potion_storage", "seed_vault", "rune_pouch", "looting_bag",
-		"tackle_box", "magic_wardrobe", "armour_case", "fancy_dress_box", "toy_box", "treasure_chest",
-		"magic_cape_rack",
+		"tackle_box", "costume_room",
 	};
 	private static final Map<String, String> STATUS_STORAGE_LABELS = buildStatusStorageLabels();
 
@@ -76,12 +75,7 @@ class MyscapePanel extends PluginPanel
 		labels.put("rune_pouch", "Rune Pouch");
 		labels.put("looting_bag", "Looting Bag");
 		labels.put("tackle_box", "Tackle Box");
-		labels.put("magic_wardrobe", "Magic Wardrobe");
-		labels.put("armour_case", "Armour Case");
-		labels.put("fancy_dress_box", "Fancy Dress Box");
-		labels.put("toy_box", "Toy Box");
-		labels.put("treasure_chest", "Treasure Chest");
-		labels.put("magic_cape_rack", "Magic Cape Rack");
+		labels.put("costume_room", "Costume Room");
 		return Collections.unmodifiableMap(labels);
 	}
 
@@ -134,12 +128,7 @@ class MyscapePanel extends PluginPanel
 	private Integer lastLootingBagItemCount;
 	private Integer lastSeedVaultItemCount;
 	private Integer lastTackleBoxItemCount;
-	private Integer lastMagicWardrobeItemCount;
-	private Integer lastArmourCaseItemCount;
-	private Integer lastFancyDressBoxItemCount;
-	private Integer lastToyBoxItemCount;
-	private Integer lastTreasureChestItemCount;
-	private Integer lastMagicCapeRackItemCount;
+	private Integer lastCostumeRoomItemCount;
 	// Same deal, for skills/completed quests/diary tiers -- the size of
 	// the most recently confirmed snapshot for each, same reasoning as
 	// the five item-source counts above (and reset alongside them in
@@ -379,12 +368,7 @@ class MyscapePanel extends PluginPanel
 		lastLootingBagItemCount = null;
 		lastSeedVaultItemCount = null;
 		lastTackleBoxItemCount = null;
-		lastMagicWardrobeItemCount = null;
-		lastArmourCaseItemCount = null;
-		lastFancyDressBoxItemCount = null;
-		lastToyBoxItemCount = null;
-		lastTreasureChestItemCount = null;
-		lastMagicCapeRackItemCount = null;
+		lastCostumeRoomItemCount = null;
 		lastLootEventCount = null;
 		lastSkillCount = null;
 		lastQuestCount = null;
@@ -504,12 +488,7 @@ class MyscapePanel extends PluginPanel
 		List<MyscapeClient.LootingBagItem> lootingBagItems,
 		List<MyscapeClient.SeedVaultItem> seedVaultItems,
 		List<MyscapeClient.TackleBoxItem> tackleBoxItems,
-		List<MyscapeClient.MagicWardrobeItem> magicWardrobeItems,
-		List<MyscapeClient.ArmourCaseItem> armourCaseItems,
-		List<MyscapeClient.FancyDressBoxItem> fancyDressBoxItems,
-		List<MyscapeClient.ToyBoxItem> toyBoxItems,
-		List<MyscapeClient.TreasureChestItem> treasureChestItems,
-		List<MyscapeClient.MagicCapeRackItem> magicCapeRackItems,
+		List<MyscapeClient.CostumeRoomItem> costumeRoomItems,
 		List<MyscapeClient.SkillItem> skillItems,
 		List<String> completedQuestNames,
 		List<MyscapeClient.DiaryTierItem> diaryTierItems)
@@ -546,29 +525,9 @@ class MyscapePanel extends PluginPanel
 		{
 			client.syncTackleBox(tackleBoxItems, syncCallback("tackle_box", count -> lastTackleBoxItemCount = count));
 		}
-		if (magicWardrobeItems != null)
+		if (costumeRoomItems != null)
 		{
-			client.syncMagicWardrobe(magicWardrobeItems, syncCallback("magic_wardrobe", count -> lastMagicWardrobeItemCount = count));
-		}
-		if (armourCaseItems != null)
-		{
-			client.syncArmourCase(armourCaseItems, syncCallback("armour_case", count -> lastArmourCaseItemCount = count));
-		}
-		if (fancyDressBoxItems != null)
-		{
-			client.syncFancyDressBox(fancyDressBoxItems, syncCallback("fancy_dress_box", count -> lastFancyDressBoxItemCount = count));
-		}
-		if (toyBoxItems != null)
-		{
-			client.syncToyBox(toyBoxItems, syncCallback("toy_box", count -> lastToyBoxItemCount = count));
-		}
-		if (treasureChestItems != null)
-		{
-			client.syncTreasureChest(treasureChestItems, syncCallback("treasure_chest", count -> lastTreasureChestItemCount = count));
-		}
-		if (magicCapeRackItems != null)
-		{
-			client.syncMagicCapeRack(magicCapeRackItems, syncCallback("magic_cape_rack", count -> lastMagicCapeRackItemCount = count));
+			client.syncCostumeRoom(costumeRoomItems, syncCallback("costume_room", count -> lastCostumeRoomItemCount = count));
 		}
 		if (skillItems != null)
 		{
@@ -813,29 +772,9 @@ class MyscapePanel extends PluginPanel
 		{
 			parts.add(lastTackleBoxItemCount + " tackle box");
 		}
-		if (lastMagicWardrobeItemCount != null)
+		if (lastCostumeRoomItemCount != null)
 		{
-			parts.add(lastMagicWardrobeItemCount + " magic wardrobe");
-		}
-		if (lastArmourCaseItemCount != null)
-		{
-			parts.add(lastArmourCaseItemCount + " armour case");
-		}
-		if (lastFancyDressBoxItemCount != null)
-		{
-			parts.add(lastFancyDressBoxItemCount + " fancy dress box");
-		}
-		if (lastToyBoxItemCount != null)
-		{
-			parts.add(lastToyBoxItemCount + " toy box");
-		}
-		if (lastTreasureChestItemCount != null)
-		{
-			parts.add(lastTreasureChestItemCount + " treasure chest");
-		}
-		if (lastMagicCapeRackItemCount != null)
-		{
-			parts.add(lastMagicCapeRackItemCount + " magic cape rack");
+			parts.add(lastCostumeRoomItemCount + " costume room");
 		}
 		if (lastSkillCount != null)
 		{
