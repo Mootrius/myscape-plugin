@@ -217,6 +217,12 @@ class MyscapePanel extends PluginPanel
 		panel.add(Box.createRigidArea(new Dimension(0, 8)));
 
 		unlinkButton.setAlignmentX(Component.CENTER_ALIGNMENT);
+		// BoxLayout stretches a child to fill the container's width unless
+		// its maximum size says otherwise -- a JButton's default maximum
+		// size is effectively unbounded, so without this the button fills
+		// the full row edge-to-edge and CENTER_ALIGNMENT above has no
+		// visible room left to actually center it within.
+		unlinkButton.setMaximumSize(unlinkButton.getPreferredSize());
 		unlinkButton.addActionListener(this::onUnlinkClicked);
 		panel.add(unlinkButton);
 
@@ -227,12 +233,6 @@ class MyscapePanel extends PluginPanel
 		panel.add(unlinkErrorLabel);
 
 		panel.add(Box.createRigidArea(new Dimension(0, 14)));
-		JLabel statusHeader = new JLabel("STATUS");
-		statusHeader.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
-		statusHeader.setAlignmentX(Component.LEFT_ALIGNMENT);
-		panel.add(statusHeader);
-		panel.add(Box.createRigidArea(new Dimension(0, 4)));
-
 		panel.add(buildStatusTable());
 
 		return panel;
