@@ -11,8 +11,6 @@ import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
 import java.awt.Insets;
 import java.awt.event.ActionEvent;
-import java.awt.event.MouseAdapter;
-import java.awt.event.MouseEvent;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -85,15 +83,15 @@ class MyscapePanel extends PluginPanel
 		labels.put("bank", "Bank");
 		labels.put("equipment", "Equipment");
 		labels.put("inventory", "Inventory");
-		labels.put("potion_storage", "Potion Storage");
-		labels.put("seed_vault", "Seed Vault");
-		labels.put("rune_pouch", "Rune Pouch");
-		labels.put("looting_bag", "Looting Bag");
-		labels.put("tackle_box", "Tackle Box");
+		labels.put("potion_storage", "Potion storage");
+		labels.put("seed_vault", "Seed vault");
+		labels.put("rune_pouch", "Rune pouch");
+		labels.put("looting_bag", "Looting bag");
+		labels.put("tackle_box", "Tackle box");
 		labels.put("poh", "PoH");
-		labels.put("forestry_kit", "Forestry Kit");
-		labels.put("master_scroll_book", "Master Scroll Book");
-		labels.put("seed_box", "Seed Box");
+		labels.put("forestry_kit", "Forestry kit");
+		labels.put("master_scroll_book", "Master scroll book");
+		labels.put("seed_box", "Seed box");
 		return Collections.unmodifiableMap(labels);
 	}
 
@@ -386,42 +384,34 @@ class MyscapePanel extends PluginPanel
 		panel.add(unlinkErrorLabel, errorConstraints);
 
 		JPanel statusTable = buildStatusTable();
+		// Collapsed by default -- often a dozen-plus rows, mostly just
+		// confirming everything's already Synced, so it starts tucked
+		// away rather than pushing the rest of the card out of view on
+		// first render.
+		statusTable.setVisible(false);
 
 		// A plain "STATUS" label used to sit here uncontrolled (see
 		// commit 66d756b, which dropped it entirely) -- this brings back
-		// the same idea but clickable, so the table underneath (often a
-		// dozen-plus rows, mostly just confirming everything's already
-		// Synced) can be tucked away without pushing the rest of the
-		// card out of view. Plain ASCII text rather than a triangle/caret
-		// glyph for the same reason renderStatusRow below sticks to
-		// plain text instead of a Unicode dot: a glyph missing from
-		// RuneLite's bundled sidebar font renders as a "tofu box"
-		// instead of silently falling back, so plain text sidesteps that
-		// risk entirely.
-		JLabel statusToggle = new JLabel("Status (hide)");
-		statusToggle.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
-		statusToggle.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-		statusToggle.addMouseListener(new MouseAdapter()
+		// the same idea but as a real button (matching unlinkButton's
+		// own look) rather than a clickable label, so it reads clearly
+		// as something to press rather than plain text.
+		JButton statusToggle = new JButton("SHOW STATUS");
+		statusToggle.addActionListener(event ->
 		{
-			@Override
-			public void mouseClicked(MouseEvent event)
-			{
-				boolean nowVisible = !statusTable.isVisible();
-				statusTable.setVisible(nowVisible);
-				statusToggle.setText(nowVisible ? "Status (hide)" : "Status (show)");
-				// GridBagLayout (like BoxLayout) skips an invisible
-				// component's preferred size entirely, so hiding the
-				// table also closes up the gap it left behind -- this
-				// just needs to be told to re-run that layout pass.
-				panel.revalidate();
-				panel.repaint();
-			}
+			boolean nowVisible = !statusTable.isVisible();
+			statusTable.setVisible(nowVisible);
+			statusToggle.setText(nowVisible ? "HIDE STATUS" : "SHOW STATUS");
+			// GridBagLayout (like BoxLayout) skips an invisible
+			// component's preferred size entirely, so hiding the
+			// table also closes up the gap it left behind -- this
+			// just needs to be told to re-run that layout pass.
+			panel.revalidate();
+			panel.repaint();
 		});
 		GridBagConstraints toggleConstraints = new GridBagConstraints();
 		toggleConstraints.gridx = 0;
 		toggleConstraints.gridy = 3;
-		toggleConstraints.anchor = GridBagConstraints.WEST;
-		toggleConstraints.fill = GridBagConstraints.HORIZONTAL;
+		toggleConstraints.anchor = GridBagConstraints.CENTER;
 		toggleConstraints.weightx = 1.0;
 		toggleConstraints.insets = new Insets(14, 0, 4, 0);
 		panel.add(statusToggle, toggleConstraints);
