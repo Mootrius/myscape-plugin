@@ -216,15 +216,25 @@ class MyscapePanel extends PluginPanel
 		panel.add(linkedNameLabel);
 		panel.add(Box.createRigidArea(new Dimension(0, 8)));
 
-		unlinkButton.setAlignmentX(Component.CENTER_ALIGNMENT);
-		// BoxLayout stretches a child to fill the container's width unless
-		// its maximum size says otherwise -- a JButton's default maximum
-		// size is effectively unbounded, so without this the button fills
-		// the full row edge-to-edge and CENTER_ALIGNMENT above has no
-		// visible room left to actually center it within.
-		unlinkButton.setMaximumSize(unlinkButton.getPreferredSize());
 		unlinkButton.addActionListener(this::onUnlinkClicked);
-		panel.add(unlinkButton);
+		// A plain setAlignmentX(CENTER_ALIGNMENT) on the button itself
+		// doesn't reliably center it here -- RuneLite's button UI
+		// delegate doesn't respect BoxLayout's per-child alignment the
+		// way a plain JLabel does (compare linkedNameLabel above, which
+		// centers correctly that way). GridBagLayout centers a single
+		// child by default regardless of that, so wrapping the button in
+		// its own single-cell GridBagLayout row sidesteps the problem
+		// entirely; the row then needs its own width to actually cover
+		// the panel's full width for that centering to have anywhere to
+		// happen, which is what the explicit Integer.MAX_VALUE maximum
+		// width below is for (same trick already used on codeField
+		// above).
+		JPanel unlinkButtonRow = new JPanel(new GridBagLayout());
+		unlinkButtonRow.setOpaque(false);
+		unlinkButtonRow.setAlignmentX(Component.LEFT_ALIGNMENT);
+		unlinkButtonRow.setMaximumSize(new Dimension(Integer.MAX_VALUE, unlinkButtonRow.getPreferredSize().height));
+		unlinkButtonRow.add(unlinkButton);
+		panel.add(unlinkButtonRow);
 
 		unlinkErrorLabel.setForeground(ColorScheme.PROGRESS_ERROR_COLOR);
 		unlinkErrorLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
