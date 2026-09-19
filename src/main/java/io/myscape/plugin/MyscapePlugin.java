@@ -80,7 +80,7 @@ import okhttp3.OkHttpClient;
 @Slf4j
 @PluginDescriptor(
 	name = "myscape",
-	description = "Links this client to your myscape.io account for purchase-goal and loot tracking.",
+	description = "Sends in-game data to myscape.io for use with its various apps",
 	tags = {"myscape", "loot", "tracker", "purchase", "goals", "ge", "grand exchange"}
 )
 public class MyscapePlugin extends Plugin
