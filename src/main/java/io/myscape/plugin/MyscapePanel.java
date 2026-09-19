@@ -69,11 +69,16 @@ class MyscapePanel extends PluginPanel
 	// back keyed by name rather than position, so this is purely about
 	// what's easiest for a player scanning the table to find a
 	// particular storage in. More storages will likely join this list
-	// later -- nothing here assumes exactly twelve, just keep it
-	// alphabetized by label when one does.
+	// later -- nothing here assumes exactly fourteen, just keep it
+	// alphabetized by label when one does. Boat Cargo shares this one
+	// "boat_cargo" key across all five boat slots (see BoatCargoItem's
+	// own comment in MyscapeClient.java for why), the same simplification
+	// PoH's own single "poh" key already makes across its six pieces of
+	// furniture.
 	private static final String[] STATUS_STORAGE_KEYS = {
-		"bank", "equipment", "forestry_kit", "inventory", "looting_bag", "master_scroll_book",
-		"poh", "potion_storage", "rune_pouch", "seed_box", "seed_vault", "tackle_box",
+		"bank", "boat_cargo", "equipment", "forestry_kit", "huntsmans_kit", "inventory",
+		"looting_bag", "master_scroll_book", "poh", "potion_storage", "rune_pouch",
+		"seed_box", "seed_vault", "tackle_box",
 	};
 	private static final Map<String, String> STATUS_STORAGE_LABELS = buildStatusStorageLabels();
 
@@ -81,6 +86,7 @@ class MyscapePanel extends PluginPanel
 	{
 		Map<String, String> labels = new LinkedHashMap<>();
 		labels.put("bank", "Bank");
+		labels.put("boat_cargo", "Boat cargo");
 		labels.put("equipment", "Equipment");
 		labels.put("inventory", "Inventory");
 		labels.put("potion_storage", "Potion storage");
@@ -90,6 +96,7 @@ class MyscapePanel extends PluginPanel
 		labels.put("tackle_box", "Tackle box");
 		labels.put("poh", "PoH");
 		labels.put("forestry_kit", "Forestry kit");
+		labels.put("huntsmans_kit", "Huntsman's kit");
 		labels.put("master_scroll_book", "Master scroll book");
 		labels.put("seed_box", "Seed box");
 		return Collections.unmodifiableMap(labels);
@@ -700,14 +707,19 @@ class MyscapePanel extends PluginPanel
 	/** Called by the plugin (see MyscapePlugin#scheduleSyncDebounced),
 	 * off the EDT, once bank/inventory/equipment/potion storage/rune
 	 * pouch/looting bag/seed vault/tackle box/PoH/Forestry Kit/Seed Box/
-	 * skills/quests/diaries have settled after a change --
+	 * Huntsman's Kit/each boat's Cargo Hold/skills/quests/diaries have
+	 * settled after a change --
 	 * syncs whichever of these
 	 * have actually been observed this session (any
 	 * argument may be null; see the field docs on MyscapePlugin's
 	 * latest*Items/latestSkillItems/latestCompletedQuestNames/
-	 * latestDiaryTierItems fields) and, for each of the twelve that
+	 * latestDiaryTierItems fields) and, for each of the fourteen that
 	 * have a Status-table row (see STATUS_STORAGE_KEYS), marks that
-	 * row synced the instant the sync succeeds (see syncCallback). A
+	 * row synced the instant the sync succeeds (see syncCallback). All
+	 * five boatCargoNItems arguments share the same "boat_cargo" status
+	 * key (see STATUS_STORAGE_KEYS' own comment for why) -- whichever
+	 * boat slot(s) actually synced this round still each mark that one
+	 * shared row. A
 	 * failure is handled the same quiet way the background
 	 * link-status poll handles one (see
 	 * MyscapePanel#recheckLinkStatusInBackground) -- this runs
@@ -729,7 +741,13 @@ class MyscapePanel extends PluginPanel
 		List<MyscapeClient.MasterScrollBookItem> masterScrollBookItems,
 		List<MyscapeClient.SkillItem> skillItems,
 		List<String> completedQuestNames,
-		List<MyscapeClient.DiaryTierItem> diaryTierItems)
+		List<MyscapeClient.DiaryTierItem> diaryTierItems,
+		List<MyscapeClient.HuntsmansKitItem> huntsmansKitItems,
+		List<MyscapeClient.BoatCargoItem> boatCargo1Items,
+		List<MyscapeClient.BoatCargoItem> boatCargo2Items,
+		List<MyscapeClient.BoatCargoItem> boatCargo3Items,
+		List<MyscapeClient.BoatCargoItem> boatCargo4Items,
+		List<MyscapeClient.BoatCargoItem> boatCargo5Items)
 	{
 		if (bankItems != null)
 		{
@@ -779,6 +797,30 @@ class MyscapePanel extends PluginPanel
 		{
 			client.syncMasterScrollBook(masterScrollBookItems, syncCallback("master_scroll_book"));
 		}
+		if (huntsmansKitItems != null)
+		{
+			client.syncHuntsmansKit(huntsmansKitItems, syncCallback("huntsmans_kit"));
+		}
+		if (boatCargo1Items != null)
+		{
+			client.syncBoatCargo(1, boatCargo1Items, syncCallback("boat_cargo"));
+		}
+		if (boatCargo2Items != null)
+		{
+			client.syncBoatCargo(2, boatCargo2Items, syncCallback("boat_cargo"));
+		}
+		if (boatCargo3Items != null)
+		{
+			client.syncBoatCargo(3, boatCargo3Items, syncCallback("boat_cargo"));
+		}
+		if (boatCargo4Items != null)
+		{
+			client.syncBoatCargo(4, boatCargo4Items, syncCallback("boat_cargo"));
+		}
+		if (boatCargo5Items != null)
+		{
+			client.syncBoatCargo(5, boatCargo5Items, syncCallback("boat_cargo"));
+		}
 		if (skillItems != null)
 		{
 			client.syncSkills(skillItems, syncCallback());
@@ -826,7 +868,7 @@ class MyscapePanel extends PluginPanel
 	/** Builds a SyncCallback whose only remaining job is to swallow a
 	 * failure quietly (see the method doc below) -- used directly (no
 	 * storage key) by skills/quests/diaries, which aren't part of the
-	 * Status table; see the overload below for the twelve that are. */
+	 * Status table; see the overload below for the fourteen that are. */
 	private MyscapeClient.SyncCallback syncCallback()
 	{
 		return new MyscapeClient.SyncCallback()
@@ -853,8 +895,10 @@ class MyscapePanel extends PluginPanel
 
 	/** Same as the plain syncCallback above, plus marking storageKey
 	 * synced in the Status table the instant this sync succeeds --
-	 * used by the twelve item-source syncs in syncInBackground, each
-	 * of which corresponds to one of STATUS_STORAGE_KEYS. This is
+	 * used by the item-source syncs in syncInBackground, each of which
+	 * corresponds to one of the fourteen STATUS_STORAGE_KEYS (boat
+	 * cargo's five per-slot syncs all sharing that one "boat_cargo"
+	 * key). This is
 	 * deliberately optimistic (set the moment the response comes back,
 	 * not on the next poll of GET /api/players/me/sync-status) so the
 	 * row doesn't lag a sync that already succeeded --

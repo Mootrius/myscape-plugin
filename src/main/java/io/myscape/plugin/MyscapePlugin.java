@@ -6,6 +6,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -472,6 +473,27 @@ public class MyscapePlugin extends Plugin
 	// in MyscapeClient.java) -- see the temporary diagnostic in
 	// onItemContainerChanged below instead.
 	private volatile List<MyscapeClient.SeedBoxItem> latestSeedBoxItems;
+	// Same deal again, for a Huntsman's Kit's contents -- also a genuine
+	// ItemContainer (InventoryID.HUNTSMANS_KIT), read and gated the same
+	// way as Looting Bag/Seed Vault/Tackle Box/Forestry Kit/Seed Box
+	// above: null until the player has actually opened it at least once
+	// this session.
+	private volatile List<MyscapeClient.HuntsmansKitItem> latestHuntsmansKitItems;
+	// Same deal again, for a boat's cargo hold -- but one field PER BOAT
+	// SLOT (1-5, the most a player can own at once -- see the OSRS
+	// Wiki's "Boat" article) rather than one shared field, since each
+	// boat is a genuinely separate ItemContainer (InventoryID.
+	// SAILING_BOAT_1_CARGOHOLD through SAILING_BOAT_5_CARGOHOLD) with
+	// its own independent contents -- unlike PoH's six furniture pieces
+	// above, which turned out to all read from one shared container.
+	// Each stays null until THAT boat's cargo hold has actually been
+	// opened at least once this session -- see readBoatCargoItems and
+	// BoatCargoItem's own comment in MyscapeClient.java.
+	private volatile List<MyscapeClient.BoatCargoItem> latestBoatCargo1Items;
+	private volatile List<MyscapeClient.BoatCargoItem> latestBoatCargo2Items;
+	private volatile List<MyscapeClient.BoatCargoItem> latestBoatCargo3Items;
+	private volatile List<MyscapeClient.BoatCargoItem> latestBoatCargo4Items;
+	private volatile List<MyscapeClient.BoatCargoItem> latestBoatCargo5Items;
 	// Same deal, for skills/quests/diaries -- unlike Potion Storage/Rune
 	// Pouch, though, these are never left null for long once logged in:
 	// see onGameTick's justBecameAvailable block, which reads all three
@@ -494,6 +516,71 @@ public class MyscapePlugin extends Plugin
 	// above are.
 	private volatile boolean masterScrollBookDirty;
 	private volatile List<MyscapeClient.MasterScrollBookItem> latestMasterScrollBookItems;
+
+	// A handful of the ItemContainer-backed sources above (Looting Bag,
+	// Seed Vault, Tackle Box, Forestry Kit, Seed Box, PoH Costume Room,
+	// Huntsman's Kit, and each boat's Cargo Hold) share a real game
+	// quirk their read*Items methods alone can't work around: checking
+	// one of these while it's ALREADY empty sends no ItemContainerChanged
+	// at all -- confirmed live (and independently, by another RuneLite
+	// plugin dedicated to the Looting Bag specifically, which hit and
+	// solved the exact same problem the same way this does) -- so
+	// onItemContainerChanged simply never fires to report the empty
+	// state, and a storage that's genuinely empty the first time a
+	// player ever checks it stays permanently un-synced instead of
+	// syncing as empty. The interface itself still opens either way
+	// (there's something on screen to see "empty" from), just with no
+	// underlying container array write for RuneLite's own change-
+	// detection to key off of.
+	//
+	// This map is the fix: onWidgetLoaded below queues an explicit,
+	// unconditional re-read of the relevant container id(s) (mapped to
+	// whichever tick they were queued on) the moment one of these
+	// storages' own interface loads, regardless of whether
+	// ItemContainerChanged separately fires for the same open -- and
+	// ALSO regardless of whether the container turns out empty or not,
+	// so this doubles as a second (harmless, idempotent) read on a
+	// normal non-empty open rather than needing to special-case "empty"
+	// at all. Deliberately not read on the very same tick it's queued:
+	// mirroring the other Looting Bag plugin's own fix, the container
+	// isn't guaranteed populated until the tick after its widget loads,
+	// so onGameTick below only actually reads an entry once the current
+	// tick is strictly past the one it was queued on. Set only from
+	// onWidgetLoaded and consumed only from onGameTick -- both client-
+	// thread-only callbacks, so this needs no synchronization of its
+	// own despite being a plain (non-volatile) mutable map, the same
+	// reasoning potionStorageDirty/runePouchDirty above already rely
+	// on.
+	private final Map<Integer, Integer> pendingContainerRereadTicks = new LinkedHashMap<>();
+
+	// Maps a "check it" interface's own widget group id to the single
+	// ItemContainer id it backs, for every source above with exactly
+	// one such container -- consulted from onWidgetLoaded below to
+	// populate pendingContainerRereadTicks. Boat Cargo Hold isn't in
+	// here: its one shared interface (InterfaceID.SAILING_BOAT_CARGOHOLD)
+	// can back any of five different container ids depending on which
+	// boat was opened, so onWidgetLoaded queues all five directly
+	// instead of going through a 1:1 lookup here.
+	private static final Map<Integer, Integer> VIRTUAL_STORAGE_WIDGET_CONTAINER_IDS = buildVirtualStorageWidgetContainerIds();
+
+	private static Map<Integer, Integer> buildVirtualStorageWidgetContainerIds()
+	{
+		Map<Integer, Integer> ids = new LinkedHashMap<>();
+		ids.put(InterfaceID.WILDERNESS_LOOTINGBAG, InventoryID.LOOTING_BAG);
+		ids.put(InterfaceID.SEED_VAULT, InventoryID.SEED_VAULT);
+		ids.put(InterfaceID.TACKLE_BOX_MAIN, InventoryID.TACKLE_BOX);
+		ids.put(InterfaceID.TACKLE_BOX_SIDE, InventoryID.TACKLE_BOX);
+		ids.put(InterfaceID.FORESTRY_KIT_MAIN, InventoryID.FORESTRY_KIT);
+		ids.put(InterfaceID.FORESTRY_KIT_SIDE, InventoryID.FORESTRY_KIT);
+		ids.put(InterfaceID.HOSIDIUS_SEEDBOX, InventoryID.SEED_BOX);
+		// POH_COSTUME_ROOM_CONTAINER_ID, not InventoryID.POH_COSTUMES --
+		// see that constant's own comment below for why.
+		ids.put(InterfaceID.POH_COSTUMES, POH_COSTUME_ROOM_CONTAINER_ID);
+		ids.put(InterfaceID.POH_COSTUMES_SIDE, POH_COSTUME_ROOM_CONTAINER_ID);
+		ids.put(InterfaceID.HUNTSMANS_KIT, InventoryID.HUNTSMANS_KIT);
+		ids.put(InterfaceID.HUNTSMANS_KIT_SIDE, InventoryID.HUNTSMANS_KIT);
+		return Collections.unmodifiableMap(ids);
+	}
 
 	@Provides
 	MyscapeConfig provideConfig(ConfigManager configManager)
@@ -617,6 +704,13 @@ public class MyscapePlugin extends Plugin
 		latestDiaryTierItems = null;
 		masterScrollBookDirty = false;
 		latestMasterScrollBookItems = null;
+		latestHuntsmansKitItems = null;
+		latestBoatCargo1Items = null;
+		latestBoatCargo2Items = null;
+		latestBoatCargo3Items = null;
+		latestBoatCargo4Items = null;
+		latestBoatCargo5Items = null;
+		pendingContainerRereadTicks.clear();
 	}
 
 	/** Aggregates a container's raw slots by item id -- necessary (not
@@ -814,6 +908,44 @@ public class MyscapePlugin extends Plugin
 		for (Map.Entry<Integer, Integer> entry : aggregateQuantities(seedBox).entrySet())
 		{
 			items.add(new MyscapeClient.SeedBoxItem(entry.getKey(), resolveItemName(entry.getKey()), entry.getValue()));
+		}
+		return items;
+	}
+
+	/** A Huntsman's Kit also genuinely is an ItemContainer
+	 * (InventoryID.HUNTSMANS_KIT), same as the Looting Bag/Seed Vault/
+	 * Tackle Box/Forestry Kit/Seed Box above -- read the exact same
+	 * straightforward way, only reporting contents once the player has
+	 * actually opened it at least once this session. */
+	private List<MyscapeClient.HuntsmansKitItem> readHuntsmansKitItems(ItemContainer huntsmansKit)
+	{
+		List<MyscapeClient.HuntsmansKitItem> items = new ArrayList<>();
+		for (Map.Entry<Integer, Integer> entry : aggregateQuantities(huntsmansKit).entrySet())
+		{
+			items.add(new MyscapeClient.HuntsmansKitItem(entry.getKey(), resolveItemName(entry.getKey()), entry.getValue()));
+		}
+		return items;
+	}
+
+	/** One boat's Cargo Hold also genuinely is an ItemContainer (one of
+	 * InventoryID.SAILING_BOAT_1_CARGOHOLD through
+	 * SAILING_BOAT_5_CARGOHOLD, depending which boat -- see
+	 * applyContainerSnapshot's own dispatch above), read the exact same
+	 * straightforward way as every other single-container source above,
+	 * only reporting a given boat's contents once the player has
+	 * actually opened THAT boat's cargo hold at least once this
+	 * session. Shared by all five slots (which boat this reads is
+	 * entirely up to which container id the caller passes in) rather
+	 * than five near-identical methods, since the read itself doesn't
+	 * care which boat it's reading -- see BoatCargoItem's own comment
+	 * in MyscapeClient.java for why the slot number still matters
+	 * everywhere else around this. */
+	private List<MyscapeClient.BoatCargoItem> readBoatCargoItems(ItemContainer boatCargo)
+	{
+		List<MyscapeClient.BoatCargoItem> items = new ArrayList<>();
+		for (Map.Entry<Integer, Integer> entry : aggregateQuantities(boatCargo).entrySet())
+		{
+			items.add(new MyscapeClient.BoatCargoItem(entry.getKey(), resolveItemName(entry.getKey()), entry.getValue()));
 		}
 		return items;
 	}
@@ -1149,13 +1281,28 @@ public class MyscapePlugin extends Plugin
 	@Subscribe
 	public void onItemContainerChanged(ItemContainerChanged event)
 	{
-		int containerId = event.getContainerId();
 		ItemContainer container = event.getItemContainer();
 		if (container == null)
 		{
 			return;
 		}
+		if (applyContainerSnapshot(event.getContainerId(), container))
+		{
+			scheduleSyncDebounced();
+		}
+	}
 
+	/** The actual per-container dispatch onItemContainerChanged above
+	 * runs -- pulled out into its own method so onGameTick's deferred
+	 * empty-storage reread below (see pendingContainerRereadTicks' own
+	 * field doc) can apply exactly the same snapshot logic to a
+	 * container it read directly off `client`, without onItemContainerChanged
+	 * ever having fired for it. Returns whether `containerId` was one
+	 * this plugin actually recognized (and therefore updated a
+	 * latest*Items field for) -- both call sites use that to decide
+	 * whether a sync is actually worth scheduling. */
+	private boolean applyContainerSnapshot(int containerId, ItemContainer container)
+	{
 		if (containerId == InventoryID.BANK)
 		{
 			latestBankItems = readBankItems(container);
@@ -1203,9 +1350,33 @@ public class MyscapePlugin extends Plugin
 		{
 			latestSeedBoxItems = readSeedBoxItems(container);
 		}
+		else if (containerId == InventoryID.HUNTSMANS_KIT)
+		{
+			latestHuntsmansKitItems = readHuntsmansKitItems(container);
+		}
 		else if (containerId == POH_COSTUME_ROOM_CONTAINER_ID)
 		{
 			latestPohItems = readPohItems(container);
+		}
+		else if (containerId == InventoryID.SAILING_BOAT_1_CARGOHOLD)
+		{
+			latestBoatCargo1Items = readBoatCargoItems(container);
+		}
+		else if (containerId == InventoryID.SAILING_BOAT_2_CARGOHOLD)
+		{
+			latestBoatCargo2Items = readBoatCargoItems(container);
+		}
+		else if (containerId == InventoryID.SAILING_BOAT_3_CARGOHOLD)
+		{
+			latestBoatCargo3Items = readBoatCargoItems(container);
+		}
+		else if (containerId == InventoryID.SAILING_BOAT_4_CARGOHOLD)
+		{
+			latestBoatCargo4Items = readBoatCargoItems(container);
+		}
+		else if (containerId == InventoryID.SAILING_BOAT_5_CARGOHOLD)
+		{
+			latestBoatCargo5Items = readBoatCargoItems(container);
 		}
 		else
 		{
@@ -1214,10 +1385,10 @@ public class MyscapePlugin extends Plugin
 			// diagnostic to genuinely never fire ItemContainerChanged at
 			// all (see bookOfScrollsDumpPending's field doc below for the
 			// full story), so there's nothing left here to catch.
-			return;
+			return false;
 		}
 
-		scheduleSyncDebounced();
+		return true;
 	}
 
 	/** Fires the moment a kill/clue-casket/pickpocket hands over loot --
@@ -1388,7 +1559,15 @@ public class MyscapePlugin extends Plugin
 	 * InterfaceID.BOOKOFSCROLLS loads -- see that field's own comment
 	 * and readMasterScrollBookItems below for why this is the only
 	 * signal available for the Master Scroll Book, unlike every other
-	 * source in this file. */
+	 * source in this file.
+	 *
+	 * Also queues an explicit re-read of whichever ItemContainer(s)
+	 * back the interface that just loaded, for every "check it" widget
+	 * VIRTUAL_STORAGE_WIDGET_CONTAINER_IDS (or, for the Cargo Hold, the
+	 * boat-slot branch below) knows about -- see
+	 * pendingContainerRereadTicks' own field doc for the empty-storage
+	 * bug this exists to fix, and onGameTick below for where the actual
+	 * re-read happens. */
 	@Subscribe
 	public void onWidgetLoaded(WidgetLoaded event)
 	{
@@ -1401,6 +1580,37 @@ public class MyscapePlugin extends Plugin
 		{
 			masterScrollBookDirty = true;
 		}
+
+		Integer virtualContainerId = VIRTUAL_STORAGE_WIDGET_CONTAINER_IDS.get(groupId);
+		if (virtualContainerId != null)
+		{
+			queueContainerReread(virtualContainerId);
+		}
+		else if (groupId == InterfaceID.SAILING_BOAT_CARGOHOLD || groupId == InterfaceID.SAILING_BOAT_CARGOHOLD_SIDE)
+		{
+			// Whichever boat this was, its cargo hold shares this one
+			// interface with the other four (see
+			// VIRTUAL_STORAGE_WIDGET_CONTAINER_IDS' own field doc) --
+			// there's nothing on this event that says which container id
+			// is actually backing it this time, so all five get queued
+			// and onGameTick below simply finds nothing to read (client.
+			// getItemContainer returns null) for whichever four aren't
+			// the one that was just opened.
+			queueContainerReread(InventoryID.SAILING_BOAT_1_CARGOHOLD);
+			queueContainerReread(InventoryID.SAILING_BOAT_2_CARGOHOLD);
+			queueContainerReread(InventoryID.SAILING_BOAT_3_CARGOHOLD);
+			queueContainerReread(InventoryID.SAILING_BOAT_4_CARGOHOLD);
+			queueContainerReread(InventoryID.SAILING_BOAT_5_CARGOHOLD);
+		}
+	}
+
+	/** Queues `containerId` to be explicitly re-read (see
+	 * applyContainerSnapshot) on the next tick strictly after this one
+	 * -- see pendingContainerRereadTicks' own field doc for why this
+	 * exists and why it waits a tick rather than reading immediately. */
+	private void queueContainerReread(int containerId)
+	{
+		pendingContainerRereadTicks.put(containerId, client.getTickCount());
 	}
 
 	/** Reads the Master Scroll Book's contents straight off
@@ -1536,7 +1746,9 @@ public class MyscapePlugin extends Plugin
 						latestPotionStorageItems, latestRunePouchItems, latestLootingBagItems,
 						latestSeedVaultItems, latestTackleBoxItems, latestPohItems,
 						latestForestryKitItems, latestSeedBoxItems, latestMasterScrollBookItems,
-						latestSkillItems, latestCompletedQuestNames, latestDiaryTierItems);
+						latestSkillItems, latestCompletedQuestNames, latestDiaryTierItems,
+						latestHuntsmansKitItems, latestBoatCargo1Items, latestBoatCargo2Items,
+						latestBoatCargo3Items, latestBoatCargo4Items, latestBoatCargo5Items);
 				}
 			},
 			delaySeconds, TimeUnit.SECONDS);
@@ -1633,6 +1845,38 @@ public class MyscapePlugin extends Plugin
 				masterScrollBookDirty = false;
 				latestMasterScrollBookItems = readMasterScrollBookItems();
 				scheduleSyncDebounced();
+			}
+
+			// Consumes pendingContainerRereadTicks (see its own field doc,
+			// and onWidgetLoaded above for how entries get queued): once
+			// this tick is strictly after the tick a storage's widget
+			// loaded on, its container is guaranteed populated (even if
+			// still empty), so read it explicitly now rather than relying
+			// on ItemContainerChanged, which the game engine skips firing
+			// when a virtual storage was already empty. Removes each
+			// entry through the iterator itself (not a plain Map.remove
+			// call, which would throw ConcurrentModificationException
+			// mid-iteration) the moment it's consumed, so a re-read only
+			// ever fires once per queued open.
+			if (!pendingContainerRereadTicks.isEmpty())
+			{
+				int currentTick = client.getTickCount();
+				Iterator<Map.Entry<Integer, Integer>> pendingIterator = pendingContainerRereadTicks.entrySet().iterator();
+				while (pendingIterator.hasNext())
+				{
+					Map.Entry<Integer, Integer> pending = pendingIterator.next();
+					int containerId = pending.getKey();
+					int queuedTick = pending.getValue();
+					if (currentTick > queuedTick)
+					{
+						pendingIterator.remove();
+						ItemContainer container = client.getItemContainer(containerId);
+						if (container != null && applyContainerSnapshot(containerId, container))
+						{
+							scheduleSyncDebounced();
+						}
+					}
+				}
 			}
 
 			// onGameStateChanged (below) fires the instant the game

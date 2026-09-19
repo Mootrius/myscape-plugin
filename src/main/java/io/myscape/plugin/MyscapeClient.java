@@ -330,6 +330,58 @@ class MyscapeClient
 		}
 	}
 
+	/** Same shape again, for a Huntsman's Kit's contents -- see
+	 * HuntsmansKitItem in the Mootrius/myscape repo's app/models.py for
+	 * the server side, and MyscapePlugin#readHuntsmansKitItems for how
+	 * this is actually built. A genuine ItemContainer
+	 * (InventoryID.HUNTSMANS_KIT), read the same straightforward way as
+	 * Tackle Box/Forestry Kit/Seed Box, only reporting contents once the
+	 * player has actually opened it at least once this session (and,
+	 * since this is one of the "virtual storage" sources, now also once
+	 * it's confirmed empty on that first open -- see
+	 * MyscapePlugin#pendingContainerRereadTicks for that fix). */
+	static final class HuntsmansKitItem
+	{
+		final int itemId;
+		final String itemName;
+		final int quantity;
+
+		HuntsmansKitItem(int itemId, String itemName, int quantity)
+		{
+			this.itemId = itemId;
+			this.itemName = itemName;
+			this.quantity = quantity;
+		}
+	}
+
+	/** Same shape again, for one boat's Cargo Hold contents -- see
+	 * BoatCargoItem in the Mootrius/myscape repo's app/models.py for the
+	 * server side. Deliberately carries no `slot` field: which of a
+	 * player's up to five boats this came from is a property of the
+	 * *sync call* (see syncBoatCargo below), not of the item data itself
+	 * -- the server-side table is what actually needs a slot column,
+	 * since (unlike PoH's furniture, which is identical no matter which
+	 * house it's in) each boat's cargo hold is genuinely independent
+	 * contents. A genuine ItemContainer
+	 * (InventoryID.SAILING_BOAT_1_CARGOHOLD..SAILING_BOAT_5_CARGOHOLD,
+	 * one per boat slot), read the same straightforward way as the other
+	 * virtual storages -- see MyscapePlugin#readBoatCargoItems and
+	 * #pendingContainerRereadTicks for the empty-on-first-open fix this
+	 * source also needed. */
+	static final class BoatCargoItem
+	{
+		final int itemId;
+		final String itemName;
+		final int quantity;
+
+		BoatCargoItem(int itemId, String itemName, int quantity)
+		{
+			this.itemId = itemId;
+			this.itemName = itemName;
+			this.quantity = quantity;
+		}
+	}
+
 	/** One skill's current level+xp -- see Player.skills' docstring in
 	 * the Mootrius/myscape repo's app/models.py for the server side, and
 	 * MyscapePlugin#readSkills for how this is actually built. `skill`
@@ -858,6 +910,45 @@ class MyscapeClient
 			itemsJson.add(itemJson);
 		}
 		syncItems("/api/players/me/master-scroll-book", itemsJson, callback);
+	}
+
+	/** Same deal as syncBank, for a Huntsman's Kit's contents (POST
+	 * /api/players/me/huntsmans-kit). */
+	void syncHuntsmansKit(List<HuntsmansKitItem> items, SyncCallback callback)
+	{
+		JsonArray itemsJson = new JsonArray();
+		for (HuntsmansKitItem item : items)
+		{
+			JsonObject itemJson = new JsonObject();
+			itemJson.addProperty("item_id", item.itemId);
+			itemJson.addProperty("item_name", item.itemName);
+			itemJson.addProperty("quantity", item.quantity);
+			itemsJson.add(itemJson);
+		}
+		syncItems("/api/players/me/huntsmans-kit", itemsJson, callback);
+	}
+
+	/** Same deal as syncBank, for ONE boat's Cargo Hold contents (POST
+	 * /api/players/me/boat-cargo/{slot}) -- `slot` (1-5, one of a
+	 * player's up to five independently-named boats, see BoatCargoItem's
+	 * own comment above for why) is part of the URL path itself, matching
+	 * the server-side endpoint exactly (see app/main.py's sync_boat_cargo
+	 * in the Mootrius/myscape repo): the request body is just this slot's
+	 * own items, same shape as every other syncX call here, so the
+	 * server only ever deletes and replaces that one slot's rows rather
+	 * than risking wiping out the other four boats' already-known cargo. */
+	void syncBoatCargo(int slot, List<BoatCargoItem> items, SyncCallback callback)
+	{
+		JsonArray itemsJson = new JsonArray();
+		for (BoatCargoItem item : items)
+		{
+			JsonObject itemJson = new JsonObject();
+			itemJson.addProperty("item_id", item.itemId);
+			itemJson.addProperty("item_name", item.itemName);
+			itemJson.addProperty("quantity", item.quantity);
+			itemsJson.add(itemJson);
+		}
+		syncItems("/api/players/me/boat-cargo/" + slot, itemsJson, callback);
 	}
 
 	/** Polls GET /api/players/me/sync-status (see app/main.py in the
