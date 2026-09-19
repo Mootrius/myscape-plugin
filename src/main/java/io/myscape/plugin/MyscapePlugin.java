@@ -543,15 +543,49 @@ public class MyscapePlugin extends Plugin
 	// normal non-empty open rather than needing to special-case "empty"
 	// at all. Deliberately not read on the very same tick it's queued:
 	// mirroring the other Looting Bag plugin's own fix, the container
-	// isn't guaranteed populated until the tick after its widget loads,
-	// so onGameTick below only actually reads an entry once the current
-	// tick is strictly past the one it was queued on. Set only from
-	// onWidgetLoaded and consumed only from onGameTick -- both client-
-	// thread-only callbacks, so this needs no synchronization of its
-	// own despite being a plain (non-volatile) mutable map, the same
-	// reasoning potionStorageDirty/runePouchDirty above already rely
-	// on.
+	// isn't guaranteed populated until the tick after its widget loads.
+	//
+	// That "one tick later" read used to be a single, one-shot attempt
+	// -- if client.getItemContainer(containerId) still came back null
+	// then, the entry was dropped and nothing retried it, on the
+	// assumption that one tick is always enough. That assumption is the
+	// suspected cause of a real report: every other virtual storage
+	// here registered as synced promptly, but the PoH Costume Room
+	// consistently took noticeably longer. Unlike the other virtual
+	// storages, the Costume Room's container id is assigned at runtime
+	// by a newer, consolidated interface script (see
+	// POH_COSTUME_ROOM_CONTAINER_ID's own comment) that plausibly needs
+	// more than one tick to finish building its combined view across
+	// all six furniture pieces -- if so, the single-shot reread was
+	// firing before the container actually existed yet, and then just
+	// giving up, leaving that sync to wait on the next real
+	// ItemContainerChanged (a deposit/withdrawal), which might not come
+	// for a while. onGameTick below now keeps
+	// retrying a still-null entry on every subsequent tick instead of
+	// abandoning it after one miss, up to MAX_CONTAINER_REREAD_WAIT_TICKS
+	// -- long enough to cover a slow-to-build interface like the
+	// Costume Room, but still bounded so the four boat-cargo slots that
+	// are queued together but never actually populate for a given
+	// player (see VIRTUAL_STORAGE_WIDGET_CONTAINER_IDS' own comment)
+	// don't retry forever. Set only from onWidgetLoaded and consumed
+	// only from onGameTick -- both client-thread-only callbacks, so
+	// this needs no synchronization of its own despite being a plain
+	// (non-volatile) mutable map, the same reasoning
+	// potionStorageDirty/runePouchDirty above already rely on.
 	private final Map<Integer, Integer> pendingContainerRereadTicks = new LinkedHashMap<>();
+
+	// How many extra ticks onGameTick below keeps retrying a queued
+	// container reread that's still coming back null, before giving up
+	// on it -- see pendingContainerRereadTicks' own field doc for why
+	// this exists (the PoH Costume Room's own build script suspected
+	// of needing more than one tick to populate) and why it's bounded
+	// rather than unconditional (the boat-cargo slots that are queued
+	// together but never actually populate for a given player). 10
+	// ticks is ~6 seconds real time -- comfortably more than any
+	// virtual storage here has been observed to need, while still
+	// short enough that a doomed boat-cargo entry doesn't sit around
+	// retrying for the rest of the session.
+	private static final int MAX_CONTAINER_REREAD_WAIT_TICKS = 10;
 
 	// Maps a "check it" interface's own widget group id to the single
 	// ItemContainer id it backs, for every source above with exactly
@@ -1850,14 +1884,20 @@ public class MyscapePlugin extends Plugin
 			// Consumes pendingContainerRereadTicks (see its own field doc,
 			// and onWidgetLoaded above for how entries get queued): once
 			// this tick is strictly after the tick a storage's widget
-			// loaded on, its container is guaranteed populated (even if
-			// still empty), so read it explicitly now rather than relying
-			// on ItemContainerChanged, which the game engine skips firing
-			// when a virtual storage was already empty. Removes each
-			// entry through the iterator itself (not a plain Map.remove
-			// call, which would throw ConcurrentModificationException
-			// mid-iteration) the moment it's consumed, so a re-read only
-			// ever fires once per queued open.
+			// loaded on, its container is read explicitly now rather
+			// than relying on ItemContainerChanged, which the game
+			// engine skips firing when a virtual storage was already
+			// empty. Most containers are already populated by that next
+			// tick, but not always guaranteed to be (see
+			// MAX_CONTAINER_REREAD_WAIT_TICKS' own doc) -- a still-null
+			// read keeps its entry queued and is retried on the ticks
+			// after, up to that cap, rather than giving up on the first
+			// miss. Removes each entry through the iterator itself (not
+			// a plain Map.remove call, which would throw
+			// ConcurrentModificationException mid-iteration) only once
+			// it's either successfully applied or past that cap, so a
+			// successful re-read still only ever fires once per queued
+			// open.
 			if (!pendingContainerRereadTicks.isEmpty())
 			{
 				int currentTick = client.getTickCount();
@@ -1869,11 +1909,18 @@ public class MyscapePlugin extends Plugin
 					int queuedTick = pending.getValue();
 					if (currentTick > queuedTick)
 					{
-						pendingIterator.remove();
 						ItemContainer container = client.getItemContainer(containerId);
-						if (container != null && applyContainerSnapshot(containerId, container))
+						if (container != null)
 						{
-							scheduleSyncDebounced();
+							pendingIterator.remove();
+							if (applyContainerSnapshot(containerId, container))
+							{
+								scheduleSyncDebounced();
+							}
+						}
+						else if (currentTick - queuedTick > MAX_CONTAINER_REREAD_WAIT_TICKS)
+						{
+							pendingIterator.remove();
 						}
 					}
 				}
