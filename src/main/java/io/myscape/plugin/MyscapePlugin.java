@@ -40,6 +40,7 @@ import net.runelite.api.gameval.VarbitID;
 import net.runelite.api.widgets.Widget;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
+import net.runelite.client.events.ConfigChanged;
 import net.runelite.client.game.ItemManager;
 import net.runelite.client.game.ItemStack;
 import net.runelite.client.plugins.Plugin;
@@ -625,7 +626,7 @@ public class MyscapePlugin extends Plugin
 	@Override
 	protected void startUp()
 	{
-		MyscapeClient apiClient = new MyscapeClient(okHttpClient, config, configManager);
+		MyscapeClient apiClient = new MyscapeClient(okHttpClient, configManager);
 		panel = new MyscapePanel(apiClient, this);
 
 		BufferedImage icon = ImageUtil.loadImageResource(getClass(), "icon.png");
@@ -635,7 +636,16 @@ public class MyscapePlugin extends Plugin
 			.priority(6)
 			.panel(panel)
 			.build();
-		clientToolbar.addNavigation(navButton);
+		// panel/navButton are always built above regardless of this
+		// setting -- background linking/syncing has nothing to do with
+		// whether the toolbar icon that opens the panel is showing, so
+		// turning "Show sidebar" off just leaves this one addNavigation
+		// call skipped (onConfigChanged below adds/removes it live if
+		// the player flips the setting later without restarting).
+		if (config.showSidebar())
+		{
+			clientToolbar.addNavigation(navButton);
+		}
 
 		panel.refreshLinkStatus();
 
@@ -1786,6 +1796,32 @@ public class MyscapePlugin extends Plugin
 				}
 			},
 			delaySeconds, TimeUnit.SECONDS);
+	}
+
+	/** Adds/removes the toolbar icon the instant the player flips "Show
+	 * sidebar" in the plugin's own config panel -- panel/navButton
+	 * themselves are always built in startUp() regardless (see its own
+	 * comment), so this never needs to touch anything but the
+	 * toolbar registration. A plain string match on the key name
+	 * rather than a shared constant, matching how the old apiBaseUrl
+	 * setting's keyName was never referenced outside its own config
+	 * annotation either -- there's only the one config value left in
+	 * this group to filter on. */
+	@Subscribe
+	public void onConfigChanged(ConfigChanged event)
+	{
+		if (!MyscapeConfig.GROUP.equals(event.getGroup()) || !"showSidebar".equals(event.getKey()))
+		{
+			return;
+		}
+		if (config.showSidebar())
+		{
+			clientToolbar.addNavigation(navButton);
+		}
+		else
+		{
+			clientToolbar.removeNavigation(navButton);
+		}
 	}
 
 	@Subscribe

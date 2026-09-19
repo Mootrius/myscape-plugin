@@ -31,15 +31,18 @@ class MyscapeClient
 {
 	private static final MediaType JSON = MediaType.parse("application/json; charset=utf-8");
 	private static final Gson GSON = new Gson();
+	// The plugin used to expose this as a "API base URL" config setting
+	// (only ever useful for pointing a client at a local dev server
+	// instead of production) -- removed since it was never actually
+	// used that way in practice, so this is just a plain constant now.
+	private static final String API_BASE_URL = "https://myscape.io";
 
 	private final OkHttpClient httpClient;
-	private final MyscapeConfig config;
 	private final ConfigManager configManager;
 
-	MyscapeClient(OkHttpClient httpClient, MyscapeConfig config, ConfigManager configManager)
+	MyscapeClient(OkHttpClient httpClient, ConfigManager configManager)
 	{
 		this.httpClient = httpClient;
-		this.config = config;
 		this.configManager = configManager;
 	}
 
@@ -1266,16 +1269,7 @@ class MyscapeClient
 
 	private String apiUrl(String path)
 	{
-		String base = config.apiBaseUrl();
-		if (base == null || base.isEmpty())
-		{
-			base = MyscapeConfig.DEFAULT_API_BASE_URL;
-		}
-		if (base.endsWith("/"))
-		{
-			base = base.substring(0, base.length() - 1);
-		}
-		return base + path;
+		return API_BASE_URL + path;
 	}
 
 	private static String describeError(int code, String body)

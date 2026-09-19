@@ -24,12 +24,13 @@ against the same synced loot history the Loot Tracker already collects).
   equipment sync" below) subscribes to all three containers' content
   changes and debounces them into synced snapshots behind one shared
   timer.
-- `MyscapeConfig.java` -- just an `apiBaseUrl` setting (defaults to
-  `https://myscape.io`; only worth changing to point at a local dev
-  server). The link state itself (API key, player id, display name)
-  is stored via `ConfigManager` directly rather than as a visible config
-  field -- it's not something a player should ever hand-type or see
-  echoed back in the settings panel.
+- `MyscapeConfig.java` -- just a `showSidebar` checkbox (defaults on)
+  that shows/hides the toolbar icon opening the plugin's panel, without
+  touching whatever background linking/syncing is already running (see
+  MyscapePlugin#onConfigChanged). The link state itself (API key,
+  player id, display name) is stored via `ConfigManager` directly
+  rather than as a visible config field -- it's not something a player
+  should ever hand-type or see echoed back in the settings panel.
 - `MyscapeClient.java` -- calls the backend's linking endpoints
   (`POST /api/link/exchange` to trade a link code for a long-lived API
   key, `GET /api/players/me` to confirm a stored key is still valid) and

@@ -8,7 +8,6 @@ import net.runelite.client.config.ConfigItem;
 public interface MyscapeConfig extends Config
 {
 	String GROUP = "myscape";
-	String DEFAULT_API_BASE_URL = "https://myscape.io";
 
 	// Keys the plugin stores directly via ConfigManager once linking
 	// succeeds (see MyscapeClient) -- deliberately not @ConfigItem
@@ -19,14 +18,17 @@ public interface MyscapeConfig extends Config
 	String PLAYER_ID_KEY = "playerId";
 	String RUNESCAPE_NAME_KEY = "runescapeName";
 
+	// Used directly by name ("showSidebar") in MyscapePlugin#onConfigChanged
+	// rather than referenced as a constant from there -- see that
+	// method's own comment for why a plain string match is fine here.
 	@ConfigItem(
-		keyName = "apiBaseUrl",
-		name = "API base URL",
-		description = "Where the plugin sends linking/tracking requests. Only change this if you're running myscape locally for development.",
+		keyName = "showSidebar",
+		name = "Show sidebar",
+		description = "Toggle visibility of the sidebar",
 		position = 0
 	)
-	default String apiBaseUrl()
+	default boolean showSidebar()
 	{
-		return DEFAULT_API_BASE_URL;
+		return true;
 	}
 }
