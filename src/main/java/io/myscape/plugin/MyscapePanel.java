@@ -185,35 +185,6 @@ class MyscapePanel extends PluginPanel
 		cards.show(cardPanel, CARD_CHECKING);
 	}
 
-	/** Fires every time this becomes the sidebar's visible tab -- first
-	 * opening it, or switching back to it from another plugin's panel
-	 * (RuneLite calls this via the Activatable interface PluginPanel
-	 * implements, not something this class schedules itself). Starts
-	 * MyscapePlugin's faster link-status poll for as long as a player's
-	 * actually looking at this panel -- see
-	 * MyscapePlugin#onPanelActivated and LINK_STATUS_ACTIVE_POLL_SECONDS'
-	 * own comment for why that's a separate, faster poll rather than
-	 * just tightening the one MyscapePlugin#startUp already runs for
-	 * everyone. */
-	@Override
-	public void onActivate()
-	{
-		super.onActivate();
-		plugin.onPanelActivated();
-	}
-
-	/** The other half of onActivate above -- fires when this stops being
-	 * the visible tab, whether that's switching to a different plugin's
-	 * panel or closing the sidebar outright while this one was showing.
-	 * Stops the faster poll onActivate started, same as if the player
-	 * had never opened this panel at all. */
-	@Override
-	public void onDeactivate()
-	{
-		super.onDeactivate();
-		plugin.onPanelDeactivated();
-	}
-
 	/** The plugin's own copy of the site's text wordmark -- myscape.io
 	 * itself uses plain gold text rather than an image for its logo (see
 	 * .logo in app/static/css/myscape.css), so this matches that exactly
@@ -547,46 +518,6 @@ class MyscapePanel extends PluginPanel
 		});
 	}
 
-	/** Periodic background re-check -- see MyscapePlugin's scheduled poll.
-	 * Unlike refreshLinkStatus() above, this never shows the "Checking..."
-	 * card (it would otherwise flash briefly every poll interval even
-	 * when nothing changed) and silently ignores a failed check instead
-	 * of surfacing an error (a transient network blip during a poll the
-	 * player didn't ask for shouldn't interrupt them -- refreshLinkStatus()'s
-	 * explicit check at startup is what surfaces a real connectivity
-	 * problem). It exists specifically to catch an unlink that happened
-	 * somewhere this client has no direct line to -- the website's own
-	 * "Unlink" button chief among them, since it only needs a browser
-	 * session and has no way to tell this client about it directly. */
-	void recheckLinkStatusInBackground()
-	{
-		client.refreshLinkStatus(new MyscapeClient.StatusCallback()
-		{
-			@Override
-			public void onLinked(String runescapeName)
-			{
-				SwingUtilities.invokeLater(() -> showLinked(runescapeName));
-			}
-
-			@Override
-			public void onNotLinked()
-			{
-				SwingUtilities.invokeLater(() -> {
-					if (showingLinked)
-					{
-						showLinkOrPrompt();
-					}
-				});
-			}
-
-			@Override
-			public void onError(String message)
-			{
-				// Ignored -- see the method doc above.
-			}
-		});
-	}
-
 	/** Called by the plugin whenever the game's login state changes (or
 	 * the account hash it depends on first becomes available -- see
 	 * MyscapePlugin#onGameTick), so the "log in first" card swaps for
@@ -721,8 +652,8 @@ class MyscapePanel extends PluginPanel
 	 * boat slot(s) actually synced this round still each mark that one
 	 * shared row. A
 	 * failure is handled the same quiet way the background
-	 * link-status poll handles one (see
-	 * MyscapePanel#recheckLinkStatusInBackground) -- this runs
+	 * sync-status poll handles one (see
+	 * MyscapePanel#refreshSyncStatusInBackground) -- this runs
 	 * unprompted in the background, not from a button click, so it
 	 * shouldn't interrupt the player the way a failed explicit action
 	 * would; the next change just tries again. */
@@ -929,13 +860,11 @@ class MyscapePanel extends PluginPanel
 	 * and refreshes every row in the Status section from the
 	 * authoritative server answer -- called once as soon as the panel
 	 * shows "Linked" (see showLinked) and again on MyscapePlugin's own
-	 * periodic background poll, the same cadence
-	 * recheckLinkStatusInBackground already runs on. A failure (offline,
-	 * not actually linked, ...) is ignored the same quiet way that
-	 * method's own background checks are -- this runs unprompted, not
-	 * from something the player clicked, so nothing here should
-	 * interrupt them; whatever the section last showed just stays put
-	 * until the next successful poll. */
+	 * periodic background poll (see MyscapePlugin#startUp). A failure
+	 * (offline, not actually linked, ...) is ignored quietly -- this
+	 * runs unprompted, not from something the player clicked, so
+	 * nothing here should interrupt them; whatever the section last
+	 * showed just stays put until the next successful poll. */
 	void refreshSyncStatusInBackground()
 	{
 		if (!showingLinked)
