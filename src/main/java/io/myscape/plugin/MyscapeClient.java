@@ -1174,6 +1174,41 @@ class MyscapeClient
 		});
 	}
 
+	/** Sends one live kill-count reading straight from the chatbox to
+	 * myscape.io (POST /api/players/me/kill-counts -- see app/main.py
+	 * and app/hiscores.py::apply_kill_count_updates in the
+	 * Mootrius/myscape repo) the moment
+	 * MyscapePlugin#onChatMessage parses one out. Unlike syncLootEvent
+	 * above, this reuses syncPayload below rather than building its
+	 * own request/response handling inline -- {"updates": [...]} in,
+	 * {"applied_count": N} out fits syncPayload's generic contract
+	 * exactly (same as syncQuests/syncDiaries above), so there's
+	 * nothing bespoke enough here to justify not sharing it.
+	 *
+	 * bossName is sent exactly as RuneLite's own chatbox worded it
+	 * (see KILLCOUNT_PATTERN's own comment in MyscapePlugin); any
+	 * renaming happens server-side, so this plugin carries no name
+	 * table of its own. An unrecognized name is silently dropped
+	 * server-side rather than surfaced as a failure here -- there's
+	 * nothing for this callback to distinguish, same as a loot event
+	 * the server already had on file. callback's int is
+	 * applied_count (0 or 1, never a running total) -- SyncCallback is
+	 * reused here purely because the shape matches, same as every
+	 * other sync method above. */
+	void syncKillCountUpdate(String bossName, int killCount, SyncCallback callback)
+	{
+		JsonObject updateJson = new JsonObject();
+		updateJson.addProperty("boss_name", bossName);
+		updateJson.addProperty("kill_count", killCount);
+
+		JsonArray updatesJson = new JsonArray();
+		updatesJson.add(updateJson);
+		JsonObject body = new JsonObject();
+		body.add("updates", updatesJson);
+
+		syncPayload("/api/players/me/kill-counts", body, "applied_count", callback);
+	}
+
 	/** Shared by every "current state" container sync above (syncBank,
 	 * syncInventory, syncEquipment, syncPotionStorage, syncRunePouch,
 	 * syncLootingBag, syncSeedVault, syncTackleBox, syncPoh,

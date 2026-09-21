@@ -15,8 +15,11 @@ import java.util.UUID;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import javax.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
+import net.runelite.api.ChatMessageType;
 import net.runelite.api.Client;
 import net.runelite.api.EnumComposition;
 import net.runelite.api.EnumID;
@@ -27,6 +30,7 @@ import net.runelite.api.ItemContainer;
 import net.runelite.api.Quest;
 import net.runelite.api.QuestState;
 import net.runelite.api.Skill;
+import net.runelite.api.events.ChatMessage;
 import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.events.ItemContainerChanged;
@@ -1430,6 +1434,96 @@ public class MyscapePlugin extends Plugin
 			items
 		);
 		panel.syncLootInBackground(lootEvent);
+	}
+
+	/** Matches a chatbox kill-count announcement ("Your Zulrah kill
+	 * count is: 1,234.", "Your subdued Duke Sucellus count is: 12.",
+	 * "Your completed Chambers of Xeric count is: 30.", "Your
+	 * completion count for Tempoross is: 50.", etc.) -- byte-for-byte
+	 * the same KILLCOUNT_PATTERN RuneLite's own core
+	 * ChatCommandsPlugin uses for its !kc chat command (confirmed
+	 * against RuneLite's GitHub source,
+	 * runelite-client/.../chatcommands/ChatCommandsPlugin.java), so
+	 * this plugin doesn't need its own per-boss wording list -- every
+	 * boss/activity's phrasing RuneLite itself recognizes is already
+	 * covered by this one pattern. The boss name is forwarded to
+	 * myscape.io exactly as matched (see onChatMessage below); any
+	 * renaming/normalization (e.g. "Barrows chest" -> "Barrows
+	 * Chests", mirroring KILLCOUNT_RENAMES in RuneLite's own
+	 * ChatCommandsPlugin) happens server-side -- see
+	 * CHAT_NAME_OVERRIDES in app/bosses.py in the Mootrius/myscape
+	 * repo -- so this plugin stays free of its own copy of that table
+	 * to keep in sync as RuneLite adds bosses. */
+	private static final Pattern KILLCOUNT_PATTERN = Pattern.compile(
+		"Your (?<pre>completion count for |subdued |completed )?(?:<col=[0-9a-f]{6}>)?(?<boss>.+?)(?:</col>)? (?<post>(?:(?:kill|harvest|lap|completion|success|Total Ticket) )?(?:count )?)is: ?<col=[0-9a-f]{6}>(?<kc>[0-9,]+)</col>");
+
+	/** This plugin's whole source of live kill-count data -- see the
+	 * Mootrius/myscape repo's app/routers/linking.py (fetches an
+	 * OSRS-hiscores baseline once, the moment a character links or
+	 * re-links) and app/hiscores.py::apply_kill_count_updates (applies
+	 * what this method reports) for the other half of the design. No
+	 * interval polling anywhere in this plugin: every kill count is
+	 * either that one link-time baseline or a reading straight out of
+	 * the chatbox the instant the game itself announces it, which is
+	 * as fresh and authoritative as a number can be -- see
+	 * KILLCOUNT_PATTERN's own comment for where the regex came from.
+	 *
+	 * GAMEMESSAGE/SPAM are the two ChatMessageTypes a kill-count line
+	 * actually arrives as (same two RuneLite's own ChatCommandsPlugin
+	 * checks for this case -- it also allows TRADE and
+	 * FRIENDSCHATNOTIFICATION, but those back a different feature of
+	 * its own, parsing *other* players' broadcast chat, which has no
+	 * equivalent here).
+	 *
+	 * KILLCOUNT_PATTERN is written loosely enough to also match a
+	 * handful of unrelated "Your ... is: <number>" chat lines that
+	 * aren't actually a kill-count report -- pre/post both being empty
+	 * is how RuneLite's own ChatCommandsPlugin tells those apart (see
+	 * its onChatMessage), so this mirrors that same guard rather than
+	 * risking a false positive getting synced as some boss's kill
+	 * count. */
+	@Subscribe
+	public void onChatMessage(ChatMessage event)
+	{
+		if (panel == null)
+		{
+			return;
+		}
+
+		if (event.getType() != ChatMessageType.GAMEMESSAGE && event.getType() != ChatMessageType.SPAM)
+		{
+			return;
+		}
+
+		Matcher matcher = KILLCOUNT_PATTERN.matcher(event.getMessage());
+		if (!matcher.find())
+		{
+			return;
+		}
+
+		String boss = matcher.group("boss");
+		String pre = matcher.group("pre");
+		String post = matcher.group("post");
+		if ((pre == null || pre.isEmpty()) && (post == null || post.isEmpty()))
+		{
+			return;
+		}
+		if (boss == null || boss.isEmpty())
+		{
+			return;
+		}
+
+		int killCount;
+		try
+		{
+			killCount = Integer.parseInt(matcher.group("kc").replace(",", ""));
+		}
+		catch (NumberFormatException e)
+		{
+			return;
+		}
+
+		panel.syncKillCountInBackground(boss, killCount);
 	}
 
 	// Set (on the client thread, from onVarbitChanged below) the moment

@@ -796,6 +796,36 @@ class MyscapePanel extends PluginPanel
 		});
 	}
 
+	/** Called by the plugin (see MyscapePlugin#onChatMessage) the
+	 * moment a chatbox kill-count line is parsed -- fires immediately,
+	 * same as syncLootInBackground above and for the same reason: a
+	 * kill-count reading is a discrete, already-true fact the instant
+	 * the game announces it, not "current state" worth folding into
+	 * the shared debounce. Kill counts aren't part of the Status table
+	 * (see STATUS_STORAGE_KEYS) and have nothing else in the UI to
+	 * update, so this just fires the sync and otherwise stays
+	 * quiet. */
+	void syncKillCountInBackground(String bossName, int killCount)
+	{
+		client.syncKillCountUpdate(bossName, killCount, new MyscapeClient.SyncCallback()
+		{
+			@Override
+			public void onSuccess(int appliedCount)
+			{
+				// Nothing to update -- see the method doc above.
+			}
+
+			@Override
+			public void onFailure(String message)
+			{
+				// Ignored -- a dropped kill-count sync just means this
+				// one chatbox reading never made it; the next line for
+				// this boss (or a manual hiscores resync) catches it up
+				// rather than this needing any retry logic of its own.
+			}
+		});
+	}
+
 	/** Builds a SyncCallback whose only remaining job is to swallow a
 	 * failure quietly (see the method doc below) -- used directly (no
 	 * storage key) by skills/quests/diaries, which aren't part of the
