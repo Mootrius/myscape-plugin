@@ -499,6 +499,17 @@ public class MyscapePlugin extends Plugin
 	private volatile boolean masterScrollBookDirty;
 	private volatile List<MyscapeClient.MasterScrollBookItem> latestMasterScrollBookItems;
 
+	// Same story as the Master Scroll Book just above: the "Character
+	// Summary" tab of the quest journal's Account Summary sidepanel
+	// (InterfaceID.ACCOUNT_SUMMARY_SIDEPANEL) has no ItemContainer or
+	// varbit backing any of its seven stats, only widgets that exist
+	// while that specific tab is open -- so this is likewise set from
+	// onWidgetLoaded below and consumed on the next game tick, the same
+	// way masterScrollBookDirty is. See readCharacterSummary's own
+	// comment for the confirmed widget layout this reads.
+	private volatile boolean characterSummaryDirty;
+	private volatile MyscapeClient.CharacterSummaryItem latestCharacterSummary;
+
 	// A handful of the ItemContainer-backed sources above (Looting Bag,
 	// Seed Vault, Tackle Box, Forestry Kit, Seed Box, PoH Costume Room,
 	// Huntsman's Kit, and each boat's Cargo Hold) share a real game
@@ -678,6 +689,8 @@ public class MyscapePlugin extends Plugin
 		latestDiaryTierItems = null;
 		masterScrollBookDirty = false;
 		latestMasterScrollBookItems = null;
+		characterSummaryDirty = false;
+		latestCharacterSummary = null;
 		latestHuntsmansKitItems = null;
 		latestBoatCargo1Items = null;
 		latestBoatCargo2Items = null;
@@ -1743,6 +1756,10 @@ public class MyscapePlugin extends Plugin
 		{
 			masterScrollBookDirty = true;
 		}
+		else if (groupId == InterfaceID.ACCOUNT_SUMMARY_SIDEPANEL)
+		{
+			characterSummaryDirty = true;
+		}
 
 		Integer virtualContainerId = VIRTUAL_STORAGE_WIDGET_CONTAINER_IDS.get(groupId);
 		if (virtualContainerId != null)
@@ -1831,6 +1848,177 @@ public class MyscapePlugin extends Plugin
 		return items;
 	}
 
+	// The dynamic-child index each Character Summary stat's value text
+	// sits at, confirmed with a live widget dump (Widget Inspector) of
+	// InterfaceID.AccountSummarySidepanel.SUMMARY_CONTENTS while the
+	// "Character Summary" tab was open -- 100 dynamic children total
+	// (this panel draws every skill/diary-area/CA-tier icon too, not
+	// just these seven), spaced roughly 12-13 apart in a consistent
+	// per-stat block. Nothing else on the panel identifies which row is
+	// which without also parsing icon sprite ids, so these are
+	// hardcoded rather than searched for. A future game update that
+	// reshuffles this layout will show up as readCharacterSummary
+	// returning null (a missing/mismatched widget) rather than a wrong
+	// number -- see that method's own comment.
+	private static final int SUMMARY_INDEX_COMBAT_LEVEL = 11;
+	private static final int SUMMARY_INDEX_TOTAL_LEVEL = 24;
+	private static final int SUMMARY_INDEX_TOTAL_XP = 36;
+	private static final int SUMMARY_INDEX_QUESTS = 49;
+	private static final int SUMMARY_INDEX_ACHIEVEMENTS = 62;
+	private static final int SUMMARY_INDEX_COMBAT_TASKS = 75;
+	private static final int SUMMARY_INDEX_COLLECTIONS = 88;
+
+	/** Reads the seven Character Summary stats (see
+	 * MyscapeClient.CharacterSummaryItem's own doc for what each one
+	 * means and why questsCompleted/questsTotal stands in for quest
+	 * points) straight off InterfaceID.AccountSummarySidepanel's dynamic
+	 * children -- see the SUMMARY_INDEX_* constants above for how those
+	 * fixed indices were confirmed. Returns null wholesale rather than a
+	 * partially-filled result if the panel isn't currently open (its
+	 * widget won't exist) or any single expected value fails to parse --
+	 * a null here is exactly what characterSummaryDirty's onGameTick
+	 * handler treats as "nothing new to sync this round", same as every
+	 * other read* method returning an empty/unchanged result. */
+	private MyscapeClient.CharacterSummaryItem readCharacterSummary()
+	{
+		Widget contents = client.getWidget(InterfaceID.AccountSummarySidepanel.SUMMARY_CONTENTS);
+		if (contents == null)
+		{
+			return null;
+		}
+		Widget[] children = contents.getDynamicChildren();
+		if (children == null)
+		{
+			return null;
+		}
+
+		Double combatLevel = parseSummaryDecimal(summaryChild(children, SUMMARY_INDEX_COMBAT_LEVEL));
+		Integer totalLevel = parseSummaryInt(summaryChild(children, SUMMARY_INDEX_TOTAL_LEVEL));
+		Long totalXp = parseSummaryLong(summaryChild(children, SUMMARY_INDEX_TOTAL_XP));
+		int[] quests = parseSummaryFraction(summaryChild(children, SUMMARY_INDEX_QUESTS));
+		int[] achievements = parseSummaryFraction(summaryChild(children, SUMMARY_INDEX_ACHIEVEMENTS));
+		int[] combatTasks = parseSummaryFraction(summaryChild(children, SUMMARY_INDEX_COMBAT_TASKS));
+		int[] collections = parseSummaryFraction(summaryChild(children, SUMMARY_INDEX_COLLECTIONS));
+
+		if (combatLevel == null || totalLevel == null || totalXp == null
+			|| quests == null || achievements == null || combatTasks == null || collections == null)
+		{
+			return null;
+		}
+
+		return new MyscapeClient.CharacterSummaryItem(
+			combatLevel, totalLevel, totalXp,
+			quests[0], quests[1],
+			achievements[0], achievements[1],
+			combatTasks[0], combatTasks[1],
+			collections[0], collections[1]);
+	}
+
+	/** children[index], or null if index is out of bounds -- guards
+	 * readCharacterSummary above against a future layout with fewer
+	 * dynamic children than SUMMARY_INDEX_COLLECTIONS expects. */
+	private static Widget summaryChild(Widget[] children, int index)
+	{
+		return index >= 0 && index < children.length ? children[index] : null;
+	}
+
+	/** Strips a Character Summary widget's RuneScape colour markup
+	 * (e.g. "<col=0dc10d>126.1</col>") and parses what's left as a
+	 * decimal -- used only for Combat Level, the one stat this panel
+	 * shows with a fractional part (see COMBAT_LEVEL_DECIMAL_ENABLED
+	 * client-side). */
+	private static Double parseSummaryDecimal(Widget widget)
+	{
+		if (widget == null || widget.getText() == null)
+		{
+			return null;
+		}
+		String cleaned = widget.getText().replaceAll("<[^>]*>", "").trim();
+		try
+		{
+			return Double.parseDouble(cleaned);
+		}
+		catch (NumberFormatException e)
+		{
+			return null;
+		}
+	}
+
+	/** Strips everything but digits from a Character Summary widget's
+	 * text (colour markup, a "Total XP: " label prefix, thousands
+	 * commas) and parses what's left as an int -- used for Total
+	 * Level. */
+	private static Integer parseSummaryInt(Widget widget)
+	{
+		if (widget == null || widget.getText() == null)
+		{
+			return null;
+		}
+		String digits = widget.getText().replaceAll("[^0-9]", "");
+		if (digits.isEmpty())
+		{
+			return null;
+		}
+		try
+		{
+			return Integer.parseInt(digits);
+		}
+		catch (NumberFormatException e)
+		{
+			return null;
+		}
+	}
+
+	/** Same as parseSummaryInt just above, but as a long -- used for
+	 * Total XP, whose value ("Total XP: <col=...>503,004,594</col>")
+	 * can exceed Integer.MAX_VALUE for a sufficiently played account. */
+	private static Long parseSummaryLong(Widget widget)
+	{
+		if (widget == null || widget.getText() == null)
+		{
+			return null;
+		}
+		String digits = widget.getText().replaceAll("[^0-9]", "");
+		if (digits.isEmpty())
+		{
+			return null;
+		}
+		try
+		{
+			return Long.parseLong(digits);
+		}
+		catch (NumberFormatException e)
+		{
+			return null;
+		}
+	}
+
+	/** Parses a Character Summary "X/Y" completion-count widget (Quests
+	 * Completed, Achievements Completed, Combat Tasks Completed,
+	 * Collections Logged all share this exact format) into a
+	 * {completed, total} pair, after stripping colour markup. */
+	private static int[] parseSummaryFraction(Widget widget)
+	{
+		if (widget == null || widget.getText() == null)
+		{
+			return null;
+		}
+		String cleaned = widget.getText().replaceAll("<[^>]*>", "").trim();
+		String[] parts = cleaned.split("/");
+		if (parts.length != 2)
+		{
+			return null;
+		}
+		try
+		{
+			return new int[] { Integer.parseInt(parts[0].trim()), Integer.parseInt(parts[1].trim()) };
+		}
+		catch (NumberFormatException e)
+		{
+			return null;
+		}
+	}
+
 	/** Whether varbitId is one of the 12 Rune Pouch type/quantity slot
 	 * varbits (see RUNE_POUCH_TYPE_VARBITS/RUNE_POUCH_QUANTITY_VARBITS) --
 	 * checked by exact id, not a min/max range like Potion Storage's
@@ -1911,7 +2099,8 @@ public class MyscapePlugin extends Plugin
 						latestForestryKitItems, latestSeedBoxItems, latestMasterScrollBookItems,
 						latestSkillItems, latestCompletedQuestNames, latestDiaryTierItems,
 						latestHuntsmansKitItems, latestBoatCargo1Items, latestBoatCargo2Items,
-						latestBoatCargo3Items, latestBoatCargo4Items, latestBoatCargo5Items);
+						latestBoatCargo3Items, latestBoatCargo4Items, latestBoatCargo5Items,
+						latestCharacterSummary);
 				}
 			},
 			delaySeconds, TimeUnit.SECONDS);
@@ -2034,6 +2223,21 @@ public class MyscapePlugin extends Plugin
 				masterScrollBookDirty = false;
 				latestMasterScrollBookItems = readMasterScrollBookItems();
 				scheduleSyncDebounced();
+			}
+
+			// Same deal, for the Character Summary panel (see
+			// characterSummaryDirty's field doc) -- also set only from
+			// onWidgetLoaded, for the same "no ItemContainer/varbit to
+			// react to" reason as the Master Scroll Book just above.
+			if (characterSummaryDirty)
+			{
+				characterSummaryDirty = false;
+				MyscapeClient.CharacterSummaryItem summary = readCharacterSummary();
+				if (summary != null)
+				{
+					latestCharacterSummary = summary;
+					scheduleSyncDebounced();
+				}
 			}
 
 			// Consumes pendingContainerRereadTicks (see its own field doc,

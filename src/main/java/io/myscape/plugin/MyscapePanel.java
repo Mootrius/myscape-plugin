@@ -644,7 +644,7 @@ class MyscapePanel extends PluginPanel
 	 * have actually been observed this session (any
 	 * argument may be null; see the field docs on MyscapePlugin's
 	 * latest*Items/latestSkillItems/latestCompletedQuestNames/
-	 * latestDiaryTierItems fields) and, for each of the fourteen that
+	 * latestDiaryTierItems/latestCharacterSummary fields) and, for each of the fourteen that
 	 * have a Status-table row (see STATUS_STORAGE_KEYS), marks that
 	 * row synced the instant the sync succeeds (see syncCallback). All
 	 * five boatCargoNItems arguments share the same "boat_cargo" status
@@ -678,7 +678,8 @@ class MyscapePanel extends PluginPanel
 		List<MyscapeClient.BoatCargoItem> boatCargo2Items,
 		List<MyscapeClient.BoatCargoItem> boatCargo3Items,
 		List<MyscapeClient.BoatCargoItem> boatCargo4Items,
-		List<MyscapeClient.BoatCargoItem> boatCargo5Items)
+		List<MyscapeClient.BoatCargoItem> boatCargo5Items,
+		MyscapeClient.CharacterSummaryItem characterSummary)
 	{
 		if (bankItems != null)
 		{
@@ -763,6 +764,10 @@ class MyscapePanel extends PluginPanel
 		if (diaryTierItems != null)
 		{
 			client.syncDiaries(diaryTierItems, syncCallback());
+		}
+		if (characterSummary != null)
+		{
+			client.syncCharacterSummary(characterSummary, syncCallback());
 		}
 	}
 

@@ -430,6 +430,55 @@ class MyscapeClient
 		}
 	}
 
+	/** The seven Character Summary stats read straight off the "Character
+	 * Summary" tab of the quest journal's Account Summary sidepanel (see
+	 * MyscapePlugin#readCharacterSummary for how these are actually read,
+	 * and Player's docstring in the Mootrius/myscape repo's app/models.py
+	 * for the server side). Unlike SkillItem/DiaryTierItem above, this
+	 * panel is only ever readable while the player has that specific tab
+	 * open in-game -- there's no ItemContainer or varbit backing any of
+	 * these seven numbers, so a session that never opens that tab simply
+	 * never has anything to sync here, the same way Master Scroll Book
+	 * only ever syncs once BOOKOFSCROLLS has actually been opened.
+	 *
+	 * questsCompleted/questsTotal ("183/184" on the panel) stands in for
+	 * quest points -- the panel doesn't surface a raw QP number, only
+	 * this completion count. */
+	static final class CharacterSummaryItem
+	{
+		final double combatLevel;
+		final int totalLevel;
+		final long totalXp;
+		final int questsCompleted;
+		final int questsTotal;
+		final int achievementsCompleted;
+		final int achievementsTotal;
+		final int combatTasksCompleted;
+		final int combatTasksTotal;
+		final int collectionsCompleted;
+		final int collectionsTotal;
+
+		CharacterSummaryItem(
+			double combatLevel, int totalLevel, long totalXp,
+			int questsCompleted, int questsTotal,
+			int achievementsCompleted, int achievementsTotal,
+			int combatTasksCompleted, int combatTasksTotal,
+			int collectionsCompleted, int collectionsTotal)
+		{
+			this.combatLevel = combatLevel;
+			this.totalLevel = totalLevel;
+			this.totalXp = totalXp;
+			this.questsCompleted = questsCompleted;
+			this.questsTotal = questsTotal;
+			this.achievementsCompleted = achievementsCompleted;
+			this.achievementsTotal = achievementsTotal;
+			this.combatTasksCompleted = combatTasksCompleted;
+			this.combatTasksTotal = combatTasksTotal;
+			this.collectionsCompleted = collectionsCompleted;
+			this.collectionsTotal = collectionsTotal;
+		}
+	}
+
 	/** One item from a single loot event (a kill, a clue casket, a
 	 * pickpocket) -- see LootEvent's docstring in the Mootrius/myscape
 	 * repo's app/models.py for the server side. Unlike BankItem and
@@ -1086,6 +1135,32 @@ class MyscapeClient
 		JsonObject body = new JsonObject();
 		body.add("diary_tiers", diariesJson);
 		syncPayload("/api/players/me/diaries", body, "area_count", callback);
+	}
+
+	/** Sends the seven Character Summary stats (POST
+	 * /api/players/me/character-summary -- see app/main.py in the
+	 * Mootrius/myscape repo) -- see MyscapePlugin#readCharacterSummary
+	 * for how these are actually read off the in-game panel. Unlike
+	 * every other sync* method above, this always sends exactly one
+	 * object rather than a list (there's only ever one "current"
+	 * summary), so the server's response field this reads back is a
+	 * fixed stat_count rather than a count of items actually sent --
+	 * see that endpoint's own comment for why. */
+	void syncCharacterSummary(CharacterSummaryItem summary, SyncCallback callback)
+	{
+		JsonObject body = new JsonObject();
+		body.addProperty("combat_level", summary.combatLevel);
+		body.addProperty("total_level", summary.totalLevel);
+		body.addProperty("total_xp", summary.totalXp);
+		body.addProperty("quests_completed", summary.questsCompleted);
+		body.addProperty("quests_total", summary.questsTotal);
+		body.addProperty("achievements_completed", summary.achievementsCompleted);
+		body.addProperty("achievements_total", summary.achievementsTotal);
+		body.addProperty("combat_tasks_completed", summary.combatTasksCompleted);
+		body.addProperty("combat_tasks_total", summary.combatTasksTotal);
+		body.addProperty("collections_completed", summary.collectionsCompleted);
+		body.addProperty("collections_total", summary.collectionsTotal);
+		syncPayload("/api/players/me/character-summary", body, "stat_count", callback);
 	}
 
 	/** Sends one loot event to myscape.io (POST /api/players/me/loot --
