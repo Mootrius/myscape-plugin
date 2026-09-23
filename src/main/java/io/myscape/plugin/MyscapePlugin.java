@@ -504,10 +504,23 @@ public class MyscapePlugin extends Plugin
 	// (InterfaceID.ACCOUNT_SUMMARY_SIDEPANEL) has no ItemContainer or
 	// varbit backing any of its seven stats, only widgets that exist
 	// while that specific tab is open -- so this is likewise set from
-	// onWidgetLoaded below and consumed on the next game tick, the same
-	// way masterScrollBookDirty is. See readCharacterSummary's own
-	// comment for the confirmed widget layout this reads.
-	private volatile boolean characterSummaryDirty;
+	// onWidgetLoaded below. Unlike masterScrollBookDirty though, this
+	// isn't a one-shot flag consumed on the very next tick -- a live
+	// test showed combat level/total level/total XP specifically (NOT
+	// the four completion-count stats below them on the same panel)
+	// still read as placeholder values (0.0/100/100) one tick after
+	// load, meaning whatever script actually computes those three
+	// (summed across all 24 skills, unlike the other four's simple
+	// stored counts) hadn't finished yet. This counts down instead --
+	// set to CHARACTER_SUMMARY_REREAD_TICKS on load, re-read on every
+	// tick while positive (see onGameTick below) -- so whichever later
+	// tick the real numbers actually land on still gets captured. Each
+	// successful re-read also re-calls scheduleSyncDebounced, which
+	// pushes the actual HTTP send further out every time (see that
+	// method's own doc) -- so the value that ends up syncing is
+	// whichever read happened last, not the first.
+	private static final int CHARACTER_SUMMARY_REREAD_TICKS = 8;
+	private volatile int characterSummaryRereadTicksLeft;
 	private volatile MyscapeClient.CharacterSummaryItem latestCharacterSummary;
 
 	// A handful of the ItemContainer-backed sources above (Looting Bag,
@@ -689,7 +702,7 @@ public class MyscapePlugin extends Plugin
 		latestDiaryTierItems = null;
 		masterScrollBookDirty = false;
 		latestMasterScrollBookItems = null;
-		characterSummaryDirty = false;
+		characterSummaryRereadTicksLeft = 0;
 		latestCharacterSummary = null;
 		latestHuntsmansKitItems = null;
 		latestBoatCargo1Items = null;
@@ -1758,7 +1771,7 @@ public class MyscapePlugin extends Plugin
 		}
 		else if (groupId == InterfaceID.ACCOUNT_SUMMARY_SIDEPANEL)
 		{
-			characterSummaryDirty = true;
+			characterSummaryRereadTicksLeft = CHARACTER_SUMMARY_REREAD_TICKS;
 		}
 
 		Integer virtualContainerId = VIRTUAL_STORAGE_WIDGET_CONTAINER_IDS.get(groupId);
@@ -1876,7 +1889,7 @@ public class MyscapePlugin extends Plugin
 	 * fixed indices were confirmed. Returns null wholesale rather than a
 	 * partially-filled result if the panel isn't currently open (its
 	 * widget won't exist) or any single expected value fails to parse --
-	 * a null here is exactly what characterSummaryDirty's onGameTick
+	 * a null here is exactly what characterSummaryRereadTicksLeft's onGameTick
 	 * handler treats as "nothing new to sync this round", same as every
 	 * other read* method returning an empty/unchanged result. */
 	private MyscapeClient.CharacterSummaryItem readCharacterSummary()
@@ -1954,7 +1967,7 @@ public class MyscapePlugin extends Plugin
 		{
 			return null;
 		}
-		String digits = widget.getText().replaceAll("[^0-9]", "");
+		String digits = widget.getText().replaceAll("<[^>]*>", "").replaceAll("[^0-9]", "");
 		if (digits.isEmpty())
 		{
 			return null;
@@ -1978,7 +1991,7 @@ public class MyscapePlugin extends Plugin
 		{
 			return null;
 		}
-		String digits = widget.getText().replaceAll("[^0-9]", "");
+		String digits = widget.getText().replaceAll("<[^>]*>", "").replaceAll("[^0-9]", "");
 		if (digits.isEmpty())
 		{
 			return null;
@@ -2226,12 +2239,13 @@ public class MyscapePlugin extends Plugin
 			}
 
 			// Same deal, for the Character Summary panel (see
-			// characterSummaryDirty's field doc) -- also set only from
-			// onWidgetLoaded, for the same "no ItemContainer/varbit to
-			// react to" reason as the Master Scroll Book just above.
-			if (characterSummaryDirty)
+			// characterSummaryRereadTicksLeft's field doc for why this is
+			// a countdown rather than a one-shot flag) -- also set only
+			// from onWidgetLoaded, for the same "no ItemContainer/varbit
+			// to react to" reason as the Master Scroll Book just above.
+			if (characterSummaryRereadTicksLeft > 0)
 			{
-				characterSummaryDirty = false;
+				characterSummaryRereadTicksLeft--;
 				MyscapeClient.CharacterSummaryItem summary = readCharacterSummary();
 				if (summary != null)
 				{
