@@ -1391,11 +1391,23 @@ public class MyscapePlugin extends Plugin
 	 * switched on, so a value this code doesn't specifically know about
 	 * still syncs correctly instead of being silently dropped. Every
 	 * clue casket comes through with event.getName() as the bare word
-	 * "Casket", no tier -- a real limitation of this event, not
-	 * something worked around here (see app/loot.py's module docstring
-	 * server-side). combatLevel is -1 for anything without one (a
-	 * casket, a pickpocket target) -- translated to null below rather
-	 * than synced as a fake level. */
+	 * "Casket", no tier -- a real limitation of this event (RuneLite's
+	 * own internal attempt to tier it reads from a reward-interface
+	 * item container this plugin can't confirm still populates on every
+	 * casket open in current-day OSRS, and empirically it's this bare
+	 * "Casket" name that actually arrives here, every time). Rather
+	 * than lose the tier entirely, this plugin does its own detection
+	 * off the chatbox's own completion line instead -- see
+	 * pendingClueTier's own comment and onChatMessage's
+	 * CLUE_SCROLL_PATTERN handling below -- and relabels a "Casket"
+	 * event to "Clue Scroll (<Tier>)" right here, the moment one is
+	 * still pending, before this event is ever built or sent; nothing
+	 * downstream (app/loot.py server-side) needs to know this
+	 * relabeling happens at all, it just sees a properly tiered
+	 * source_name that was never actually "Casket" to begin with.
+	 * combatLevel is -1 for anything without one (a casket, a
+	 * pickpocket target) -- translated to null below rather than
+	 * synced as a fake level. */
 	@Subscribe
 	public void onLootReceived(LootReceived event)
 	{
@@ -1424,10 +1436,25 @@ public class MyscapePlugin extends Plugin
 			items.add(new MyscapeClient.LootEventItem(entry.getKey(), resolveItemName(entry.getKey()), entry.getValue()));
 		}
 
+		// See pendingClueTier's own comment: a "Casket" event this close
+		// behind a "You have completed N <tier> Treasure Trails." chat
+		// line IS that clue's own reward, so it gets tagged with the
+		// tier here instead of going out as the bare, tier-less
+		// "Casket" name -- one-shot (cleared immediately below) so a
+		// later, unrelated casket open can never inherit a stale tier.
+		String sourceName = event.getName();
+		if ("EVENT".equals(event.getType().name()) && CASKET_EVENT_NAME.equals(sourceName)
+			&& pendingClueTier != null
+			&& client.getTickCount() - pendingClueTierTick <= CLUE_TIER_MAX_TICK_GAP)
+		{
+			sourceName = "Clue Scroll (" + pendingClueTier + ")";
+		}
+		pendingClueTier = null;
+
 		Integer combatLevel = event.getCombatLevel() >= 0 ? event.getCombatLevel() : null;
 		MyscapeClient.LootEvent lootEvent = new MyscapeClient.LootEvent(
 			UUID.randomUUID().toString(),
-			event.getName(),
+			sourceName,
 			event.getType().name().toLowerCase(),
 			combatLevel,
 			Instant.now().toString(),
@@ -1435,6 +1462,45 @@ public class MyscapePlugin extends Plugin
 		);
 		panel.syncLootInBackground(lootEvent);
 	}
+
+	// Set (on the client thread, from onChatMessage's CLUE_SCROLL_PATTERN
+	// handling below) the moment a "You have completed N <tier> Treasure
+	// Trails." chatbox line is seen -- the capitalized tier name
+	// ("Hard"), or null when there's no clue completion still waiting to
+	// be paired with its own casket-opening LootReceived event. Read
+	// (and unconditionally cleared) the next time onLootReceived sees a
+	// "Casket" event, using pendingClueTierTick below to decide whether
+	// it's still fresh enough to trust -- see onLootReceived's own
+	// comment for why this pairing happens there rather than acting on
+	// the chat line alone (the chat line carries a tier but no items;
+	// only the paired LootReceived event carries the actual reward
+	// items to attach that tier to).
+	private volatile String pendingClueTier;
+
+	// The client tick (see client.getTickCount()) pendingClueTier was
+	// last set on -- compared against the current tick in
+	// onLootReceived, not just checked for non-null, so a "Casket"
+	// event that shows up long after some earlier, already-stale clue
+	// completion message (the player opened a DIFFERENT casket later,
+	// say) can't wrongly inherit that old tier.
+	private int pendingClueTierTick;
+
+	// How many client ticks (~0.6s each) a pending clue tier (see
+	// pendingClueTier above) stays valid for pairing with the next
+	// Casket LootReceived event -- generous enough to cover ordinary
+	// client/network jitter between the chat line and the loot event
+	// landing (both fire off the same single "open casket" action, so
+	// in practice they land the same tick or the next one), tight
+	// enough that ambling off and opening some other casket minutes
+	// later can't accidentally inherit a leftover tier.
+	private static final int CLUE_TIER_MAX_TICK_GAP = 5;
+
+	// The exact, bare event name RuneLite's own bundled Loot Tracker
+	// plugin gives every clue casket open (see onLootReceived's own
+	// comment) -- kept as a named constant here (rather than an inline
+	// literal) purely so onLootReceived's own tier-relabeling check and
+	// this comment can't silently drift apart from each other.
+	private static final String CASKET_EVENT_NAME = "Casket";
 
 	/** Matches a chatbox kill-count announcement ("Your Zulrah kill
 	 * count is: 1,234.", "Your subdued Duke Sucellus count is: 12.",
@@ -1454,6 +1520,24 @@ public class MyscapePlugin extends Plugin
 	 * CHAT_NAME_OVERRIDES in app/bosses.py in the Mootrius/myscape
 	 * repo -- so this plugin stays free of its own copy of that table
 	 * to keep in sync as RuneLite adds bosses. */
+	/** Matches the chatbox line the game itself prints the instant a
+	 * Treasure Trail is completed ("You have completed 15 hard Treasure
+	 * Trails."), used to detect a clue casket's tier (see
+	 * pendingClueTier's own comment above and onLootReceived, where the
+	 * tier this captures actually gets attached to that casket's loot
+	 * event) since RuneLite's own LootReceived event never carries one
+	 * (see onLootReceived's own docstring). Byte-for-byte the same
+	 * CLUE_SCROLL_PATTERN RuneLite's own bundled Loot Tracker plugin
+	 * uses internally for its own (here, unconfirmed-reliable) tiering
+	 * attempt (net.runelite.client.plugins.loottracker.
+	 * LootTrackerPlugin), just with the tier group loosened to
+	 * [a-zA-Z]+ rather than assumed-lowercase [a-z]+ -- this plugin
+	 * capitalizes the captured word itself (see onChatMessage below)
+	 * rather than trust the exact casing the live chat line happens to
+	 * use. */
+	private static final Pattern CLUE_SCROLL_PATTERN =
+		Pattern.compile("You have completed [0-9,]+ ([a-zA-Z]+) Treasure Trails?\\.");
+
 	private static final Pattern KILLCOUNT_PATTERN = Pattern.compile(
 		"Your (?<pre>completion count for |subdued |completed )?(?:<col=[0-9a-f]{6}>)?(?<boss>.+?)(?:</col>)? (?<post>(?:(?:kill|harvest|lap|completion|success|Total Ticket) )?(?:count )?)is: ?<col=[0-9a-f]{6}>(?<kc>[0-9,]+)</col>");
 
@@ -1492,6 +1576,21 @@ public class MyscapePlugin extends Plugin
 
 		if (event.getType() != ChatMessageType.GAMEMESSAGE && event.getType() != ChatMessageType.SPAM)
 		{
+			return;
+		}
+
+		// See pendingClueTier's own comment -- this only ever records a
+		// tier for onLootReceived's own "Casket" event to pick up right
+		// after; it doesn't sync anything by itself.
+		Matcher clueMatcher = CLUE_SCROLL_PATTERN.matcher(event.getMessage());
+		if (clueMatcher.find())
+		{
+			String tier = clueMatcher.group(1);
+			if (tier != null && !tier.isEmpty())
+			{
+				pendingClueTier = Character.toUpperCase(tier.charAt(0)) + tier.substring(1).toLowerCase();
+				pendingClueTierTick = client.getTickCount();
+			}
 			return;
 		}
 
