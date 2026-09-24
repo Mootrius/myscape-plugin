@@ -15,6 +15,7 @@ import java.util.UUID;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.function.UnaryOperator;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import javax.inject.Inject;
@@ -41,6 +42,7 @@ import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.gameval.InventoryID;
 import net.runelite.api.gameval.ItemID;
 import net.runelite.api.gameval.VarbitID;
+import net.runelite.api.gameval.VarPlayerID;
 import net.runelite.api.widgets.Widget;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
@@ -80,6 +82,13 @@ import okhttp3.OkHttpClient;
  * LootEvent history (see onLootReceived below and kc_counts_by_player in
  * the Mootrius/myscape repo's app/loot.py), which was already being
  * captured for the Loot Tracker feature before Mindmaps existed.
+ *
+ * Also keeps Character Overview's seven-stat summary row live -- combat
+ * level, total level, total XP, quests/achievement-diary-tiers/combat-
+ * achievements/collection-log completed (see MyscapeClient.
+ * CharacterSummaryItem's own doc for the full breakdown of which of the
+ * seven have a native RuneLite signal of their own vs. which still rely
+ * on readCharacterSummary/patchCharacterSummary below).
  */
 @Slf4j
 @PluginDescriptor(
@@ -362,6 +371,36 @@ public class MyscapePlugin extends Plugin
 		return Collections.unmodifiableSet(ids);
 	}
 
+	// Combat achievements -- six per-tier "total tasks completed in this
+	// tier" varbits (RuneLite's own named gameval VarbitID constants,
+	// confirmed against the actual RuneLite API jar this plugin builds
+	// against, same as DIARY_TIER_VARBITS above), summed together in
+	// patchCombatAchievementStats below for combatTasksCompleted. There
+	// is no single "combat tasks completed" varbit the way there's a
+	// single QUESTS_COMPLETED_COUNT for quests, so this is the closest
+	// equivalent -- and no "combat tasks total" varbit at all (see
+	// combatAchievementsDirty's own doc for why combatTasksTotal is left
+	// out of this file's own live updates entirely).
+	private static final int[] COMBAT_ACHIEVEMENT_COMPLETED_VARBITS = {
+		VarbitID.CA_TOTAL_TASKS_COMPLETED_EASY, VarbitID.CA_TOTAL_TASKS_COMPLETED_MEDIUM,
+		VarbitID.CA_TOTAL_TASKS_COMPLETED_HARD, VarbitID.CA_TOTAL_TASKS_COMPLETED_ELITE,
+		VarbitID.CA_TOTAL_TASKS_COMPLETED_MASTER, VarbitID.CA_TOTAL_TASKS_COMPLETED_GRANDMASTER,
+	};
+
+	// Same reasoning as DIARY_VARBIT_IDS above -- a flattened set purely
+	// for a cheap onVarbitChanged membership check.
+	private static final Set<Integer> COMBAT_ACHIEVEMENT_VARBIT_IDS = buildCombatAchievementVarbitIds();
+
+	private static Set<Integer> buildCombatAchievementVarbitIds()
+	{
+		Set<Integer> ids = new HashSet<>();
+		for (int varbitId : COMBAT_ACHIEVEMENT_COMPLETED_VARBITS)
+		{
+			ids.add(varbitId);
+		}
+		return Collections.unmodifiableSet(ids);
+	}
+
 	private MyscapePanel panel;
 	private NavigationButton navButton;
 	private ScheduledFuture<?> syncStatusPollTask;
@@ -501,10 +540,17 @@ public class MyscapePlugin extends Plugin
 
 	// Same story as the Master Scroll Book just above: the "Character
 	// Summary" tab of the quest journal's Account Summary sidepanel
-	// (InterfaceID.ACCOUNT_SUMMARY_SIDEPANEL) has no ItemContainer or
-	// varbit backing any of its seven stats, only widgets that exist
-	// while that specific tab is open -- so this is likewise set from
-	// onWidgetLoaded below. Unlike masterScrollBookDirty though, this
+	// (InterfaceID.ACCOUNT_SUMMARY_SIDEPANEL) has no ItemContainer
+	// backing any of its seven stats, only widgets that exist while that
+	// specific tab is open -- so this is likewise set from onWidgetLoaded
+	// below. (Six of the seven DO now have their own live varbit/varp or
+	// derived signal -- see patchCombatAndTotalStats/patchQuestStats/
+	// patchDiaryStats/patchCombatAchievementStats/patchCollectionStats
+	// below and CharacterSummaryItem's own doc in MyscapeClient.java --
+	// but this widget-driven path is still what establishes the very
+	// first baseline each session, and still the periodic full-accuracy
+	// correction pass every one of those live patches implicitly relies
+	// on to fix any drift.) Unlike masterScrollBookDirty though, this
 	// isn't a one-shot flag consumed on the very next tick -- a live
 	// test showed combat level/total level/total XP specifically (NOT
 	// the four completion-count stats below them on the same panel)
@@ -1700,6 +1746,25 @@ public class MyscapePlugin extends Plugin
 	// generic signal exists.
 	private boolean diariesDirty;
 
+	// Same deal, for combat achievements -- set from onVarbitChanged
+	// below when one of the six COMBAT_ACHIEVEMENT_COMPLETED_VARBITS
+	// changes. Consumed by patchCombatAchievementStats below, which only
+	// ever patches combatTasksCompleted, never combatTasksTotal -- unlike
+	// the 48 diary varbits (a fixed, essentially-never-changing count of
+	// 48 tiers total) there's no equivalent "how many combat tasks exist
+	// in total" varbit, and that number genuinely does grow as Jagex
+	// adds new bosses/tasks, so combatTasksTotal is left alone here and
+	// only ever updated by the Character Summary panel read
+	// (readCharacterSummary) the way it always was.
+	private boolean combatAchievementsDirty;
+
+	// Same deal, for the collection log -- set from onVarbitChanged below
+	// when VarPlayerID.COLLECTION_COUNT or COLLECTION_COUNT_MAX itself
+	// changes. Unlike combat achievements above, both completed AND
+	// total have their own live varp here, so patchCollectionStats below
+	// patches both fields together.
+	private boolean collectionsDirty;
+
 	@Subscribe
 	public void onVarbitChanged(VarbitChanged event)
 	{
@@ -1707,6 +1772,10 @@ public class MyscapePlugin extends Plugin
 		if (varpId >= POTION_STORAGE_VARP_MIN && varpId <= POTION_STORAGE_VARP_MAX)
 		{
 			potionStorageDirty = true;
+		}
+		if (varpId == VarPlayerID.COLLECTION_COUNT || varpId == VarPlayerID.COLLECTION_COUNT_MAX)
+		{
+			collectionsDirty = true;
 		}
 
 		int varbitId = event.getVarbitId();
@@ -1717,6 +1786,10 @@ public class MyscapePlugin extends Plugin
 		if (DIARY_VARBIT_IDS.contains(varbitId))
 		{
 			diariesDirty = true;
+		}
+		if (COMBAT_ACHIEVEMENT_VARBIT_IDS.contains(varbitId))
+		{
+			combatAchievementsDirty = true;
 		}
 	}
 
@@ -2032,6 +2105,205 @@ public class MyscapePlugin extends Plugin
 		}
 	}
 
+	/** Rebuilds latestCharacterSummary with just the field(s) one of the
+	 * patchXStats methods below actually has fresh data for, copying
+	 * everything else across unchanged from whatever was last known (the
+	 * most recent full readCharacterSummary above, or a previous patch)
+	 * -- CharacterSummaryItem's fields are all primitive and required
+	 * (see its own doc), so there's no way to send a partial "some
+	 * fields still unknown" summary to the server. A first successful
+	 * readCharacterSummary -- i.e. the player opening the Character
+	 * Summary tab at least once this session -- is what establishes the
+	 * baseline these live updates patch onto; a null latestCharacterSummary
+	 * means that baseline doesn't exist yet, so this is simply a no-op
+	 * until it does. From that point on, patchXStats calls below can
+	 * arrive in any order within the same onGameTick pass (multiple
+	 * dirty flags firing on the same tick, e.g. a quest that also grants
+	 * xp) and still converge correctly, since each only ever overwrites
+	 * its own field(s) and carries every other field forward untouched.
+	 * Must only ever be called from the client thread -- every call site
+	 * below already is (onGameTick), matching the same single-writer
+	 * assumption latestCharacterSummary's own volatile already relies on
+	 * (see its field doc). */
+	private void patchCharacterSummary(UnaryOperator<MyscapeClient.CharacterSummaryItem> patch)
+	{
+		MyscapeClient.CharacterSummaryItem current = latestCharacterSummary;
+		if (current == null)
+		{
+			return;
+		}
+		latestCharacterSummary = patch.apply(current);
+		scheduleSyncDebounced();
+	}
+
+	/** Patches combatLevel/totalLevel/totalXp onto latestCharacterSummary
+	 * from the skills data skillsDirty's onGameTick handler just read,
+	 * independent of whether the Character Summary panel has ever been
+	 * opened this session (compare readCharacterSummary above, which
+	 * needs that panel open). Combat level comes straight from
+	 * RuneLite's own Player#getCombatLevel -- it already computes the
+	 * real combat formula, no reason to duplicate it here -- as a plain
+	 * integer rather than the panel's own optional decimal-precision
+	 * display (e.g. 126 here vs. that panel's own "126.1"), which is
+	 * fine: the website already rounds this to a whole number either
+	 * way (see render_character_overview's own comment in the Mootrius/
+	 * myscape repo's app/pages.py). Total level is the sum of all 24
+	 * real (unboosted) skill levels, and total XP the sum of all 24
+	 * skills' xp, both off latestSkillItems -- the exact same read
+	 * readSkills just produced, so these three always agree with
+	 * whatever skills the server is about to receive in the very same
+	 * sync. See patchCharacterSummary's own doc for why this only does
+	 * anything once a first Character Summary read has already
+	 * established a baseline. */
+	private void patchCombatAndTotalStats()
+	{
+		if (latestSkillItems == null || client.getLocalPlayer() == null)
+		{
+			return;
+		}
+		int totalLevel = 0;
+		long totalXp = 0;
+		for (MyscapeClient.SkillItem item : latestSkillItems)
+		{
+			totalLevel += item.level;
+			totalXp += item.xp;
+		}
+		double combatLevel = client.getLocalPlayer().getCombatLevel();
+		// Lambdas below can only capture effectively-final locals, so
+		// totalLevel/totalXp (both accumulated in the loop above) need
+		// their own final copies -- combatLevel is already effectively
+		// final (a single assignment) and needs none.
+		final int finalTotalLevel = totalLevel;
+		final long finalTotalXp = totalXp;
+		patchCharacterSummary(prev -> new MyscapeClient.CharacterSummaryItem(
+			combatLevel, finalTotalLevel, finalTotalXp,
+			prev.questsCompleted, prev.questsTotal,
+			prev.achievementsCompleted, prev.achievementsTotal,
+			prev.combatTasksCompleted, prev.combatTasksTotal,
+			prev.collectionsCompleted, prev.collectionsTotal));
+	}
+
+	/** Patches questsCompleted/questsTotal onto latestCharacterSummary
+	 * from latestCompletedQuestNames (just read by questsDirty's onGameTick
+	 * handler) and RuneLite's own full Quest enum -- like
+	 * patchCombatAndTotalStats above, this needs no Character Summary
+	 * panel open, unlike readCharacterSummary. See patchCharacterSummary's
+	 * own doc for why this is a no-op before a first panel read has ever
+	 * established a baseline this session. */
+	private void patchQuestStats()
+	{
+		if (latestCompletedQuestNames == null)
+		{
+			return;
+		}
+		int completed = latestCompletedQuestNames.size();
+		int total = Quest.values().length;
+		patchCharacterSummary(prev -> new MyscapeClient.CharacterSummaryItem(
+			prev.combatLevel, prev.totalLevel, prev.totalXp,
+			completed, total,
+			prev.achievementsCompleted, prev.achievementsTotal,
+			prev.combatTasksCompleted, prev.combatTasksTotal,
+			prev.collectionsCompleted, prev.collectionsTotal));
+	}
+
+	/** Patches achievementsCompleted/achievementsTotal onto
+	 * latestCharacterSummary from latestDiaryTierItems (just read by
+	 * diariesDirty's onGameTick handler) -- each area's entry there is
+	 * its HIGHEST completed tier (see readDiaryTiers' own doc: a real
+	 * diary journal can't have Elite done without Easy/Medium/Hard also
+	 * done), so an area at "elite" counts as 4 completed tiers here, one
+	 * at "hard" counts as 3, and so on -- matching how the Character
+	 * Summary panel's own "Achievement diaries completed" count counts
+	 * individual tier completions, not areas. achievementsTotal is
+	 * DIARY_VARBIT_IDS.size() (48: 12 areas x 4 tiers) -- a genuinely
+	 * fixed number (new diary tiers are far rarer than new combat
+	 * achievements, see combatAchievementsDirty's own doc), safe to
+	 * derive here rather than needing the panel read the way
+	 * combatTasksTotal still does. */
+	private void patchDiaryStats()
+	{
+		if (latestDiaryTierItems == null)
+		{
+			return;
+		}
+		int completed = 0;
+		for (MyscapeClient.DiaryTierItem item : latestDiaryTierItems)
+		{
+			for (int i = 0; i < DIARY_TIER_NAMES.length; i++)
+			{
+				if (DIARY_TIER_NAMES[i].equals(item.tier))
+				{
+					completed += i + 1;
+					break;
+				}
+			}
+		}
+		int total = DIARY_VARBIT_IDS.size();
+		// See patchCombatAndTotalStats's own comment on why this final
+		// copy is needed: completed is accumulated in the loop above, so
+		// it isn't effectively final on its own.
+		final int finalCompleted = completed;
+		patchCharacterSummary(prev -> new MyscapeClient.CharacterSummaryItem(
+			prev.combatLevel, prev.totalLevel, prev.totalXp,
+			prev.questsCompleted, prev.questsTotal,
+			finalCompleted, total,
+			prev.combatTasksCompleted, prev.combatTasksTotal,
+			prev.collectionsCompleted, prev.collectionsTotal));
+	}
+
+	/** Patches combatTasksCompleted onto latestCharacterSummary by
+	 * summing COMBAT_ACHIEVEMENT_COMPLETED_VARBITS' six current values
+	 * directly -- never combatTasksTotal, which has no equivalent live
+	 * varbit and so is left exactly as the last Character Summary panel
+	 * read set it (see combatAchievementsDirty's own doc). */
+	private void patchCombatAchievementStats()
+	{
+		int completed = 0;
+		for (int varbitId : COMBAT_ACHIEVEMENT_COMPLETED_VARBITS)
+		{
+			completed += client.getVarbitValue(varbitId);
+		}
+		// See patchCombatAndTotalStats's own comment on why this final
+		// copy is needed.
+		final int finalCompleted = completed;
+		patchCharacterSummary(prev -> new MyscapeClient.CharacterSummaryItem(
+			prev.combatLevel, prev.totalLevel, prev.totalXp,
+			prev.questsCompleted, prev.questsTotal,
+			prev.achievementsCompleted, prev.achievementsTotal,
+			finalCompleted, prev.combatTasksTotal,
+			prev.collectionsCompleted, prev.collectionsTotal));
+	}
+
+	/** Patches collectionsCompleted/collectionsTotal onto
+	 * latestCharacterSummary from VarPlayerID.COLLECTION_COUNT/
+	 * COLLECTION_COUNT_MAX directly -- unlike combat achievements above,
+	 * both completed AND total have their own live varp here (it's what
+	 * Jagex's own client uses to build the Character Summary panel's own
+	 * "Collections logged" line in the first place), so both fields get
+	 * patched together. A value of 0 for either is treated as "not
+	 * populated yet" rather than a real reading -- matching a similar
+	 * >0 guard in pajlads/DinkPlugin's own CollectionNotifier (a widely-
+	 * used third-party RuneLite plugin that reads these same two varps),
+	 * whose own comment notes this can read as unpopulated until the
+	 * player has had the Character Summary tab open at some point --
+	 * from then on, though, these two stay live without needing that tab
+	 * open again. */
+	private void patchCollectionStats()
+	{
+		int completed = client.getVarpValue(VarPlayerID.COLLECTION_COUNT);
+		int total = client.getVarpValue(VarPlayerID.COLLECTION_COUNT_MAX);
+		if (completed <= 0 || total <= 0)
+		{
+			return;
+		}
+		patchCharacterSummary(prev -> new MyscapeClient.CharacterSummaryItem(
+			prev.combatLevel, prev.totalLevel, prev.totalXp,
+			prev.questsCompleted, prev.questsTotal,
+			prev.achievementsCompleted, prev.achievementsTotal,
+			prev.combatTasksCompleted, prev.combatTasksTotal,
+			completed, total));
+	}
+
 	/** Whether varbitId is one of the 12 Rune Pouch type/quantity slot
 	 * varbits (see RUNE_POUCH_TYPE_VARBITS/RUNE_POUCH_QUANTITY_VARBITS) --
 	 * checked by exact id, not a min/max range like Potion Storage's
@@ -2201,29 +2473,60 @@ public class MyscapePlugin extends Plugin
 				scheduleSyncDebounced();
 			}
 
-			// Same deal, for skills (see skillsDirty's field doc).
+			// Same deal, for skills (see skillsDirty's field doc). Also
+			// patches Character Overview's combatLevel/totalLevel/totalXp
+			// off this same read (see patchCombatAndTotalStats's own doc)
+			// -- independent of whether the Character Summary panel has
+			// ever been opened this session.
 			if (skillsDirty)
 			{
 				skillsDirty = false;
 				latestSkillItems = readSkills();
 				scheduleSyncDebounced();
+				patchCombatAndTotalStats();
 			}
 
-			// Same deal, for completed quests (see questsDirty's field doc).
+			// Same deal, for completed quests (see questsDirty's field
+			// doc). Also patches Character Overview's questsCompleted/
+			// questsTotal off this same read (see patchQuestStats).
 			if (questsDirty)
 			{
 				questsDirty = false;
 				latestCompletedQuestNames = readCompletedQuestNames();
 				scheduleSyncDebounced();
+				patchQuestStats();
 			}
 
 			// Same deal, for achievement diary tiers (see diariesDirty's
-			// field doc).
+			// field doc). Also patches Character Overview's
+			// achievementsCompleted/achievementsTotal off this same read
+			// (see patchDiaryStats).
 			if (diariesDirty)
 			{
 				diariesDirty = false;
 				latestDiaryTierItems = readDiaryTiers();
 				scheduleSyncDebounced();
+				patchDiaryStats();
+			}
+
+			// Same deal, for combat achievements (see
+			// combatAchievementsDirty's field doc) -- no intermediate
+			// "latest*" list field needed here, unlike skills/quests/
+			// diaries above, since nothing else in this file needs the
+			// raw per-tier counts beyond the one sum patchCombatAchieve-
+			// mentStats computes.
+			if (combatAchievementsDirty)
+			{
+				combatAchievementsDirty = false;
+				patchCombatAchievementStats();
+			}
+
+			// Same deal, for the collection log (see collectionsDirty's
+			// field doc).
+			if (collectionsDirty)
+			{
+				collectionsDirty = false;
+				patchCollectionStats();
 			}
 
 			// Same deal, for the Master Scroll Book (see

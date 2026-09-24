@@ -430,16 +430,30 @@ class MyscapeClient
 		}
 	}
 
-	/** The seven Character Summary stats read straight off the "Character
-	 * Summary" tab of the quest journal's Account Summary sidepanel (see
-	 * MyscapePlugin#readCharacterSummary for how these are actually read,
-	 * and Player's docstring in the Mootrius/myscape repo's app/models.py
-	 * for the server side). Unlike SkillItem/DiaryTierItem above, this
-	 * panel is only ever readable while the player has that specific tab
-	 * open in-game -- there's no ItemContainer or varbit backing any of
-	 * these seven numbers, so a session that never opens that tab simply
-	 * never has anything to sync here, the same way Master Scroll Book
-	 * only ever syncs once BOOKOFSCROLLS has actually been opened.
+	/** The seven Character Summary stats shown on the "Character Summary"
+	 * tab of the quest journal's Account Summary sidepanel. Originally
+	 * this was ONLY ever readable while that specific tab was open in-
+	 * game (see MyscapePlugin#readCharacterSummary), since none of the
+	 * seven had a varbit/varp of their own to react to independently --
+	 * unlike SkillItem/DiaryTierItem above, which always did. That's no
+	 * longer true across the board: combatLevel/totalLevel/totalXp are
+	 * now also kept live off the very same skill reads SkillItem's own
+	 * sync already does (see MyscapePlugin#patchCombatAndTotalStats),
+	 * questsCompleted/questsTotal off RuneLite's own Quest enum (see
+	 * patchQuestStats), achievementsCompleted/achievementsTotal off the
+	 * same 48 diary varbits DiaryTierItem's own sync already reads (see
+	 * patchDiaryStats), combatTasksCompleted off six combat-achievement-
+	 * tier varbits (see patchCombatAchievementStats -- combatTasksTotal
+	 * is the one field left panel-only, since there's no equivalent
+	 * "how many combat tasks exist in total" varbit), and
+	 * collectionsCompleted/collectionsTotal off two collection log varps
+	 * (see patchCollectionStats). readCharacterSummary and its panel-
+	 * open trigger (characterSummaryRereadTicksLeft) still exist and
+	 * still work exactly as before -- they're now the periodic "silent
+	 * correction" pass that resyncs the full seven-stat baseline (and is
+	 * still the ONLY way any of this gets populated for the very first
+	 * time each session -- see patchCharacterSummary's own doc), rather
+	 * than the only way any of these seven numbers ever update at all.
 	 *
 	 * questsCompleted/questsTotal ("183/184" on the panel) stands in for
 	 * quest points -- the panel doesn't surface a raw QP number, only
