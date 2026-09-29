@@ -208,9 +208,28 @@ final class GlbWriter
 			// drops it). The character-overview viewer reads this back
 			// off each primitive's own geometry.userData to set
 			// THREE.Object3D#renderOrder -- see pages.py's own comment.
+			//
+			// missingTexture: true exactly when this primitive WANTED a
+			// texture (textureId >= 0) but texturePngs has no PNG bytes
+			// for it -- TextureExtractor couldn't pull that one id off
+			// the live client for whatever reason (see its own doc for
+			// the "skip, don't fail the capture" contract). Without this
+			// flag such a primitive is visually indistinguishable from a
+			// deliberately plain one: it falls back to COLOR_0 alone,
+			// which for a textured face is only ever
+			// HslColor#textureLightnessToRgb's lightness-only value (a
+			// real captured model's texture data carries no hue/
+			// saturation of its own -- the pattern lives entirely in the
+			// missing image), so it renders as a flat, oddly bright
+			// near-white/gray patch that reads as a rendering bug even
+			// though it's really a missing-asset fallback working exactly
+			// as designed. The viewer uses this to dim that patch instead
+			// of leaving it looking broken -- see pages.py's own comment.
+			boolean missingTexture = primitive.textureId >= 0 && !texturePngs.containsKey(primitive.textureId);
 			JsonObject extras = new JsonObject();
 			extras.addProperty("osrsPriority", primitive.priority);
 			extras.addProperty("osrsBias", primitive.bias);
+			extras.addProperty("missingTexture", missingTexture);
 			primitiveJson.add("extras", extras);
 			primitivesJson.add(primitiveJson);
 		}

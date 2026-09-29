@@ -106,6 +106,18 @@ public class GlbWriterTest
 			assertFalse("no material references a texture that was never supplied",
 				pbr.has("baseColorTexture"));
 		}
+
+		JsonArray primitivesJson = parsed.json.getAsJsonArray("meshes").get(0).getAsJsonObject()
+			.getAsJsonArray("primitives");
+		boolean sawMissingTextureTrue = false;
+		for (JsonElement primEl : primitivesJson)
+		{
+			if (primEl.getAsJsonObject().getAsJsonObject("extras").get("missingTexture").getAsBoolean())
+			{
+				sawMissingTextureTrue = true;
+			}
+		}
+		assertTrue("the one primitive that actually wanted a texture is flagged missing", sawMissingTextureTrue);
 	}
 
 	@Test
@@ -241,6 +253,65 @@ public class GlbWriterTest
 		}
 		assertTrue(seen.contains("2,0"));
 		assertTrue(seen.contains("9,3"));
+	}
+
+	@Test
+	public void missingTextureIsFlaggedInExtras_suppliedTextureIsNot() throws IOException
+	{
+		// buildMixedSyntheticModel's own textured triangle uses texture id
+		// 3 -- supplying a PNG for a DIFFERENT id (7) means primitive 3
+		// still genuinely wants a texture it doesn't have, the exact
+		// real-capture scenario (TextureExtractor pulled some of a
+		// model's textures but not this one) missingTexture exists to
+		// flag, distinct from a primitive that was never textured at all.
+		Model model = buildMixedSyntheticModel();
+		MeshData mesh = ModelMeshBuilder.build(model, HslColor.DEFAULT_BRIGHTNESS);
+
+		Map<Integer, byte[]> texturePngs = new HashMap<>();
+		texturePngs.put(7, encodeTinyPng(0x00FF00));
+
+		ParsedGlb parsed = ParsedGlb.parse(GlbWriter.write(mesh, texturePngs));
+
+		JsonArray primitivesJson = parsed.json.getAsJsonArray("meshes").get(0).getAsJsonObject()
+			.getAsJsonArray("primitives");
+		boolean sawMissingTextureTrue = false;
+		for (JsonElement primEl : primitivesJson)
+		{
+			JsonObject extras = primEl.getAsJsonObject().getAsJsonObject("extras");
+			boolean missingTexture = extras.get("missingTexture").getAsBoolean();
+			if (missingTexture)
+			{
+				sawMissingTextureTrue = true;
+			}
+			else
+			{
+				// An untextured primitive (textureId == -1) is correctly
+				// NOT flagged -- it never wanted a texture, so nothing is
+				// actually missing for it.
+			}
+		}
+		assertTrue("the primitive that wanted texture id 3 (never supplied) is flagged", sawMissingTextureTrue);
+	}
+
+	@Test
+	public void suppliedTextureIsNotFlaggedAsMissing() throws IOException
+	{
+		Model model = buildMixedSyntheticModel();
+		MeshData mesh = ModelMeshBuilder.build(model, HslColor.DEFAULT_BRIGHTNESS);
+
+		Map<Integer, byte[]> texturePngs = new HashMap<>();
+		texturePngs.put(3, encodeTinyPng(0xFF00FF)); // matches buildMixedSyntheticModel's own textureId
+
+		ParsedGlb parsed = ParsedGlb.parse(GlbWriter.write(mesh, texturePngs));
+
+		JsonArray primitivesJson = parsed.json.getAsJsonArray("meshes").get(0).getAsJsonObject()
+			.getAsJsonArray("primitives");
+		for (JsonElement primEl : primitivesJson)
+		{
+			JsonObject extras = primEl.getAsJsonObject().getAsJsonObject("extras");
+			assertFalse("every primitive's own texture need was satisfied -- none should be flagged",
+				extras.get("missingTexture").getAsBoolean());
+		}
 	}
 
 	/** A small mixed model exercising every branch GlbWriter has to

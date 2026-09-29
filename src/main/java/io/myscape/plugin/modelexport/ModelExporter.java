@@ -4,6 +4,7 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Model;
 import net.runelite.api.TextureProvider;
 
@@ -19,6 +20,7 @@ import net.runelite.api.TextureProvider;
  * package's own internals or duplicating any of those classes' own doc
  * comments at the call site.
  */
+@Slf4j
 public final class ModelExporter
 {
 	private ModelExporter()
@@ -85,9 +87,29 @@ public final class ModelExporter
 	public static byte[] captureGlb(Model model, double brightness, TextureProvider textureProvider)
 	{
 		MeshData mesh = ModelMeshBuilder.build(model, brightness);
+		Set<Integer> usedTextureIds = usedTextureIds(mesh);
 		Map<Integer, byte[]> texturePngs = textureProvider != null
-			? TextureExtractor.extractPngs(textureProvider, usedTextureIds(mesh))
+			? TextureExtractor.extractPngs(textureProvider, usedTextureIds)
 			: Collections.emptyMap();
+
+		// Every id a primitive actually wanted but TextureExtractor
+		// couldn't supply -- GlbWriter tags each such primitive's own
+		// extras with missingTexture: true (see its own doc) so the
+		// viewer can render it as a dim, honest "unknown" fallback rather
+		// than the oddly bright flat-lightness patch a caller would
+		// otherwise see with no explanation. Logged here rather than
+		// silently swallowed so a real capture that hits this is
+		// diagnosable from the client's own log instead of only visible
+		// as an unexplained visual artifact after the fact.
+		if (textureProvider != null && texturePngs.size() < usedTextureIds.size())
+		{
+			Set<Integer> missing = new HashSet<>(usedTextureIds);
+			missing.removeAll(texturePngs.keySet());
+			log.warn("Character model export: {} of {} used texture(s) could not be extracted "
+					+ "(ids {}); affected faces will render as a flat, untextured fallback.",
+				missing.size(), usedTextureIds.size(), missing);
+		}
+
 		return GlbWriter.write(mesh, texturePngs);
 	}
 
