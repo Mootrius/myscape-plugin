@@ -1,6 +1,7 @@
 package io.myscape.plugin;
 
 import com.google.inject.Provides;
+import io.myscape.plugin.modelexport.ModelExporter;
 import java.awt.image.BufferedImage;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -28,6 +29,8 @@ import net.runelite.api.EquipmentInventorySlot;
 import net.runelite.api.GameState;
 import net.runelite.api.Item;
 import net.runelite.api.ItemContainer;
+import net.runelite.api.Model;
+import net.runelite.api.Player;
 import net.runelite.api.Quest;
 import net.runelite.api.QuestState;
 import net.runelite.api.Skill;
@@ -44,6 +47,7 @@ import net.runelite.api.gameval.ItemID;
 import net.runelite.api.gameval.VarbitID;
 import net.runelite.api.gameval.VarPlayerID;
 import net.runelite.api.widgets.Widget;
+import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.events.ConfigChanged;
@@ -100,6 +104,9 @@ public class MyscapePlugin extends Plugin
 {
 	@Inject
 	private Client client;
+
+	@Inject
+	private ClientThread clientThread;
 
 	@Inject
 	private ClientToolbar clientToolbar;
@@ -2696,5 +2703,76 @@ public class MyscapePlugin extends Plugin
 	String getRuneScapeName()
 	{
 		return currentRuneScapeName;
+	}
+
+	/** Fired once a capture attempt from captureCharacterModel below
+	 * finishes, one way or the other -- always on the RuneLite client
+	 * thread (see that method's own doc), never the Swing EDT.
+	 * MyscapePanel's own call site is what hops back to the EDT for
+	 * anything UI-facing, the same split every other MyscapeClient
+	 * callback interface (SyncCallback, LinkCallback, ...) already
+	 * leaves to its own callers. */
+	interface ModelCaptureCallback
+	{
+		void onSuccess(byte[] glb);
+
+		void onFailure(String message);
+	}
+
+	/** Captures the local player's current model -- base skeleton,
+	 * every equipped item, and current animation pose, all already
+	 * composited by the game engine exactly as
+	 * {@code Renderable#getModel()} hands it to the client's own
+	 * renderer -- as a standalone .glb file, for MyscapePanel's
+	 * "Export 3D model" button (see MyscapeClient#syncCharacterModel
+	 * for what happens to the bytes next). See package
+	 * io.myscape.plugin.modelexport's own docs (ModelExporter,
+	 * ModelMeshBuilder, GlbWriter) for the actual conversion.
+	 *
+	 * <p>A Model's own vertex/face arrays are only valid to read while
+	 * still on the client thread (RuneLite reuses/pools the backing
+	 * arrays across frames for some renderables -- see
+	 * ModelMeshBuilder's own top-of-file doc in the modelexport
+	 * package), so the whole read-and-convert pass runs inside one
+	 * clientThread.invoke: by the time callback fires, the live Model
+	 * has already been fully copied out into a plain byte[], safe to
+	 * hand off anywhere. callback itself still runs on the client
+	 * thread, not the Swing EDT -- see ModelCaptureCallback's own doc
+	 * above. */
+	void captureCharacterModel(ModelCaptureCallback callback)
+	{
+		clientThread.invoke(() ->
+		{
+			Player localPlayer = client.getLocalPlayer();
+			if (localPlayer == null)
+			{
+				callback.onFailure("Log into the game first.");
+				return;
+			}
+			Model model = localPlayer.getModel();
+			if (model == null)
+			{
+				callback.onFailure("Character isn't ready to capture yet -- try again in a moment.");
+				return;
+			}
+			try
+			{
+				// The live client's own brightness setting where one's
+				// available (its TextureProvider), rather than always
+				// falling back to ModelExporter's own 0.8 default --
+				// see HslColor#DEFAULT_BRIGHTNESS's own doc in the
+				// modelexport package for why that matters to a player
+				// who's actually moved that slider.
+				byte[] glb = client.getTextureProvider() != null
+					? ModelExporter.captureGlb(model, client.getTextureProvider().getBrightness())
+					: ModelExporter.captureGlb(model);
+				callback.onSuccess(glb);
+			}
+			catch (Exception e)
+			{
+				log.warn("Failed to capture character model", e);
+				callback.onFailure("Something went wrong capturing your character model.");
+			}
+		});
 	}
 }

@@ -116,6 +116,17 @@ class MyscapePanel extends PluginPanel
 	private final JButton unlinkButton = new JButton("UNLINK");
 	private final JLabel unlinkErrorLabel = new JLabel();
 
+	// The "Export 3D model" button and its own status/error line, right
+	// below the Status section's toggle -- see buildLinkedCard() and
+	// onExportModelClicked(). exportModelStatusLabel doubles as both
+	// the error color (see onExportModelClicked's failure branch) and
+	// the site's own completed-progress green on success, the same
+	// two-color reuse renderStatusRow() already does for the Status
+	// table's own value cells, rather than this needing a second label
+	// just for the success case.
+	private final JButton exportModelButton = new JButton("Export 3D model");
+	private final JLabel exportModelStatusLabel = new JLabel();
+
 	// The Status section's own per-storage status-value cells (see
 	// buildStatusTable) and the synced/not-synced state currently drawn
 	// into each -- Boolean rather than boolean so "not yet checked"
@@ -390,6 +401,35 @@ class MyscapePanel extends PluginPanel
 		errorConstraints.insets = new Insets(6, 0, 0, 0);
 		panel.add(unlinkErrorLabel, errorConstraints);
 
+		// "Export 3D model" -- captures the local player's current
+		// composited model (base skeleton + every equipped item + pose)
+		// via MyscapePlugin#captureCharacterModel and uploads it to
+		// myscape.io for Character Overview's 3D viewer (see
+		// onExportModelClicked). Sits right under the unlink section,
+		// its own small block within the same single-column grid --
+		// same button styling as unlinkButton, and the same
+		// text-status-label-below-a-button shape as the link card's own
+		// linkErrorLabel, just reused here for a success message too
+		// (see exportModelStatusLabel's own field doc).
+		exportModelButton.addActionListener(this::onExportModelClicked);
+		GridBagConstraints exportButtonConstraints = new GridBagConstraints();
+		exportButtonConstraints.gridx = 0;
+		exportButtonConstraints.gridy = 3;
+		exportButtonConstraints.anchor = GridBagConstraints.CENTER;
+		exportButtonConstraints.weightx = 1.0;
+		exportButtonConstraints.insets = new Insets(14, 0, 0, 0);
+		panel.add(exportModelButton, exportButtonConstraints);
+
+		exportModelStatusLabel.setVisible(false);
+		GridBagConstraints exportStatusConstraints = new GridBagConstraints();
+		exportStatusConstraints.gridx = 0;
+		exportStatusConstraints.gridy = 4;
+		exportStatusConstraints.anchor = GridBagConstraints.WEST;
+		exportStatusConstraints.fill = GridBagConstraints.HORIZONTAL;
+		exportStatusConstraints.weightx = 1.0;
+		exportStatusConstraints.insets = new Insets(6, 0, 0, 0);
+		panel.add(exportModelStatusLabel, exportStatusConstraints);
+
 		JPanel statusTable = buildStatusTable();
 		// Collapsed by default -- often a dozen-plus rows, mostly just
 		// confirming everything's already Synced, so it starts tucked
@@ -417,7 +457,7 @@ class MyscapePanel extends PluginPanel
 		});
 		GridBagConstraints toggleConstraints = new GridBagConstraints();
 		toggleConstraints.gridx = 0;
-		toggleConstraints.gridy = 3;
+		toggleConstraints.gridy = 5;
 		toggleConstraints.anchor = GridBagConstraints.CENTER;
 		toggleConstraints.weightx = 1.0;
 		toggleConstraints.insets = new Insets(14, 0, 4, 0);
@@ -425,7 +465,7 @@ class MyscapePanel extends PluginPanel
 
 		GridBagConstraints tableConstraints = new GridBagConstraints();
 		tableConstraints.gridx = 0;
-		tableConstraints.gridy = 4;
+		tableConstraints.gridy = 6;
 		tableConstraints.anchor = GridBagConstraints.WEST;
 		tableConstraints.fill = GridBagConstraints.HORIZONTAL;
 		tableConstraints.weightx = 1.0;
@@ -630,6 +670,68 @@ class MyscapePanel extends PluginPanel
 					unlinkButton.setEnabled(true);
 					unlinkErrorLabel.setText("<html>" + escape(message) + "</html>");
 					unlinkErrorLabel.setVisible(true);
+				});
+			}
+		});
+	}
+
+	/** Handles a click on exportModelButton -- disables the button,
+	 * clears any previous status line, and asks the plugin to capture
+	 * the local player's current model (see MyscapePlugin#
+	 * captureCharacterModel, which runs the actual RuneLite-API read on
+	 * the client thread, not here). That callback -- success or
+	 * failure -- also fires on the client thread, not the EDT, so
+	 * every branch below that touches a Swing component wraps itself
+	 * in SwingUtilities.invokeLater, same as every other callback in
+	 * this class. On a successful capture this immediately hands the
+	 * bytes to MyscapeClient#syncCharacterModel to upload -- there's no
+	 * separate "review before uploading" step, matching how every
+	 * other explicit action in this panel (link, unlink) goes straight
+	 * through to the server the moment it succeeds locally. */
+	private void onExportModelClicked(ActionEvent event)
+	{
+		exportModelButton.setEnabled(false);
+		exportModelStatusLabel.setVisible(false);
+
+		plugin.captureCharacterModel(new MyscapePlugin.ModelCaptureCallback()
+		{
+			@Override
+			public void onSuccess(byte[] glb)
+			{
+				client.syncCharacterModel(glb, new MyscapeClient.SyncCallback()
+				{
+					@Override
+					public void onSuccess(int byteCount)
+					{
+						SwingUtilities.invokeLater(() -> {
+							exportModelButton.setEnabled(true);
+							exportModelStatusLabel.setForeground(ColorScheme.PROGRESS_COMPLETE_COLOR);
+							exportModelStatusLabel.setText("<html>Uploaded -- see it on myscape.io's Character Overview.</html>");
+							exportModelStatusLabel.setVisible(true);
+						});
+					}
+
+					@Override
+					public void onFailure(String message)
+					{
+						SwingUtilities.invokeLater(() -> {
+							exportModelButton.setEnabled(true);
+							exportModelStatusLabel.setForeground(ColorScheme.PROGRESS_ERROR_COLOR);
+							exportModelStatusLabel.setText("<html>" + escape(message) + "</html>");
+							exportModelStatusLabel.setVisible(true);
+						});
+					}
+				});
+			}
+
+			@Override
+			public void onFailure(String message)
+			{
+				SwingUtilities.invokeLater(() -> {
+					exportModelButton.setEnabled(true);
+					exportModelStatusLabel.setForeground(ColorScheme.PROGRESS_ERROR_COLOR);
+					exportModelStatusLabel.setText("<html>" + escape(message) + "</html>");
+					exportModelStatusLabel.setVisible(true);
 				});
 			}
 		});

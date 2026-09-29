@@ -5,6 +5,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import java.io.IOException;
+import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -1175,6 +1176,34 @@ class MyscapeClient
 		body.addProperty("collections_completed", summary.collectionsCompleted);
 		body.addProperty("collections_total", summary.collectionsTotal);
 		syncPayload("/api/players/me/character-summary", body, "stat_count", callback);
+	}
+
+	/** Sends the local player's current 3D model -- captured by
+	 * MyscapePlugin#captureCharacterModel from RuneLite's own
+	 * Renderable#getModel() and converted to a .glb file by
+	 * io.myscape.plugin.modelexport's ModelExporter -- to myscape.io
+	 * (POST /api/players/me/character-model, see app/main.py in the
+	 * Mootrius/myscape repo) for Character Overview's 3D viewer. Sent
+	 * base64-encoded inside a plain JSON body, like every other sync*
+	 * method here, rather than as a raw multipart/octet-stream upload,
+	 * so this reuses syncPayload's shared request/response handling
+	 * instead of a bespoke binary-upload code path -- a captured
+	 * player model is small enough (a single composited mesh, typically
+	 * well under a megabyte) that base64's ~33% overhead isn't worth
+	 * avoiding that way. Full replace, same as every other
+	 * "current state" sync -- there's only ever one current model per
+	 * account, not a history of captures.
+	 *
+	 * callback's int is byte_count -- the server's own count of the
+	 * bytes it decoded and stored, so this doubles as a transit-
+	 * integrity check (did the whole file actually arrive?) rather
+	 * than an item count in the sense every other sync* method's
+	 * callback reports. */
+	void syncCharacterModel(byte[] glb, SyncCallback callback)
+	{
+		JsonObject body = new JsonObject();
+		body.addProperty("glb_base64", Base64.getEncoder().encodeToString(glb));
+		syncPayload("/api/players/me/character-model", body, "byte_count", callback);
 	}
 
 	/** Sends one loot event to myscape.io (POST /api/players/me/loot --
