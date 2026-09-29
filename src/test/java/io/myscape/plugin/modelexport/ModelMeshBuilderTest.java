@@ -156,6 +156,66 @@ public class ModelMeshBuilderTest
 	}
 
 	@Test
+	public void hiddenFace_thirdColorIsSentinelMinus2_isExcludedEntirely()
+	{
+		// A third-corner color of -2 is a distinct sentinel from -1 (flat
+		// shading, see the next test): it means the game never draws
+		// this face at all. Reading it as a real color instead of
+		// skipping the face is exactly the bug that put a stray
+		// near-white triangle on top of a real fire cape capture -- this
+		// checks the hidden face contributes NOTHING to the exported
+		// mesh, not just that its color comes out muted.
+		int hsl = packHsl(20, 5, 80);
+		Model model = FakeModel.builder()
+			.faceCount(2)
+			.vertices(
+				new float[]{0f, 1f, 0f, 5f, 6f, 5f},
+				new float[]{0f, 0f, 1f, 5f, 5f, 6f},
+				new float[]{0f, 0f, 0f, 5f, 5f, 5f})
+			.faceIndices(new int[]{0, 3}, new int[]{1, 4}, new int[]{2, 5})
+			.faceColors(new int[]{hsl, hsl}, new int[]{hsl, hsl}, new int[]{hsl, -2})
+			.build();
+
+		MeshData mesh = ModelMeshBuilder.build(model, HslColor.DEFAULT_BRIGHTNESS);
+
+		assertEquals("the hidden face contributes nothing -- only the real face's primitive survives",
+			1, mesh.primitives.size());
+		assertEquals("only the real (non-hidden) face's 3 corners reached the vertex buffer",
+			3, mesh.positions.size());
+	}
+
+	@Test
+	public void flatShadedFace_thirdColorIsSentinelMinus1_usesCorner1ColorForAllThreeCorners()
+	{
+		// A third-corner color of -1 means flat shading: the whole face
+		// is meant to use corner 1's own color, not a color per corner.
+		// color2 here is deliberately different from color1 to prove it
+		// gets overridden too (matching RuneProfile's own documented
+		// handling: flat shading overrides corner 2 as well as the
+		// sentinel corner 3, not only the -1 itself).
+		int color1 = packHsl(10, 6, 90);
+		int color2 = packHsl(40, 6, 30);
+		Model model = FakeModel.builder()
+			.faceCount(1)
+			.vertices(new float[]{0f, 1f, 0f}, new float[]{0f, 0f, 1f}, new float[]{0f, 0f, 0f})
+			.faceIndices(new int[]{0}, new int[]{1}, new int[]{2})
+			.faceColors(new int[]{color1}, new int[]{color2}, new int[]{-1})
+			.build();
+
+		MeshData mesh = ModelMeshBuilder.build(model, HslColor.DEFAULT_BRIGHTNESS);
+
+		float[] expected = HslColor.toLinearRgb(color1, HslColor.DEFAULT_BRIGHTNESS);
+		assertEquals(3, mesh.colors.size());
+		for (float[] rgb : mesh.colors)
+		{
+			assertEquals("every corner's RGB matches corner 1's own color, not its own raw c2/c3 value",
+				expected[0], rgb[0], EPS);
+			assertEquals(expected[1], rgb[1], EPS);
+			assertEquals(expected[2], rgb[2], EPS);
+		}
+	}
+
+	@Test
 	public void partiallyTransparentFace_marksTranslucentPrimitive_withCorrectAlpha()
 	{
 		int hsl = packHsl(0, 0, 64);

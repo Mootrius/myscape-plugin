@@ -86,6 +86,37 @@ final class ModelMeshBuilder
 	 * below. */
 	private static final float[] AXIS_SIGNS = {1f, -1f, -1f};
 
+	/** A third-corner face color of -1 means flat shading: the whole
+	 * triangle is meant to use corner 1's own color rather than one
+	 * color per corner (confirmed against RuneProfile's own published
+	 * ModelMeshBuilder, which documents the identical OSRS convention
+	 * independently). Reading -1 here as if it were a real packed-HSL
+	 * value instead of substituting corner 1's color produces a wrong
+	 * (near-white, fully saturated -- see {@link #HIDDEN_FACE}'s own
+	 * doc for exactly why) color for that one corner, smearing a
+	 * visible gradient across what should be a uniformly flat-shaded
+	 * triangle. */
+	private static final int FLAT_SHADED = -1;
+
+	/** A third-corner face color of -2 is a DIFFERENT sentinel from
+	 * {@link #FLAT_SHADED}: it means the game never draws this face at
+	 * all, not "use some other color for it." Both -1 and -2 happen to
+	 * decode, via this class's own packed-HSL bit layout (hue = high 6
+	 * bits, sat = next 3, lightness = low 7 -- see HslColor's own doc),
+	 * to hue 63/saturation 7/lightness 126-127: a fully saturated,
+	 * nearly maximum-lightness color, which is close enough to white
+	 * that it reads as a plain bright/white artifact regardless of
+	 * which sentinel produced it. Treating -2 as a real color (as this
+	 * class used to, before this fix) silently draws a face the game
+	 * itself never shows, as a stray near-white triangle sitting on top
+	 * of the model -- exactly the "triangular artifact... right on the
+	 * back at the top of the cape" a real capture showed on a fire
+	 * cape. This is the same bug RuneProfile's own exporter documents
+	 * hitting on an inferno cape, and the same fix: skip any face whose
+	 * third color is this sentinel entirely, before it ever reaches the
+	 * vertex buffer, rather than trying to color it at all. */
+	private static final int HIDDEN_FACE = -2;
+
 	static MeshData build(Model model)
 	{
 		return build(model, HslColor.DEFAULT_BRIGHTNESS);
@@ -132,6 +163,15 @@ final class ModelMeshBuilder
 		int faceCount = model.getFaceCount();
 		for (int face = 0; face < faceCount; face++)
 		{
+			if (c3[face] == HIDDEN_FACE)
+			{
+				// The game never draws this face -- see HIDDEN_FACE's own
+				// doc. Skip it before it ever reaches the vertex buffer,
+				// same treatment as a fully-transparent face just below,
+				// rather than assigning it any color at all.
+				continue;
+			}
+
 			int transparency = transparencies != null ? (transparencies[face] & 0xFF) : 0;
 			if (transparency == 255)
 			{
@@ -189,15 +229,24 @@ final class ModelMeshBuilder
 				uvC = computeFaceUv(origin, uEnd, vEnd, vx[c], vy[c], vz[c]);
 			}
 
+			// A flat-shaded face (see FLAT_SHADED's own doc) uses corner
+			// 1's own color for corners 2 and 3 too, rather than their
+			// raw c2[face]/c3[face] values -- for corner 3 specifically,
+			// FLAT_SHADED (-1) is itself a sentinel, not a real color,
+			// same category of value as HIDDEN_FACE just handled above.
+			boolean flatShaded = c3[face] == FLAT_SHADED;
+			int color2 = flatShaded ? c1[face] : c2[face];
+			int color3 = flatShaded ? c1[face] : c3[face];
+
 			float[] rgbA = textured
 				? HslColor.textureLightnessToRgb(c1[face], brightness)
 				: HslColor.toLinearRgb(c1[face], brightness);
 			float[] rgbB = textured
-				? HslColor.textureLightnessToRgb(c2[face], brightness)
-				: HslColor.toLinearRgb(c2[face], brightness);
+				? HslColor.textureLightnessToRgb(color2, brightness)
+				: HslColor.toLinearRgb(color2, brightness);
 			float[] rgbC = textured
-				? HslColor.textureLightnessToRgb(c3[face], brightness)
-				: HslColor.toLinearRgb(c3[face], brightness);
+				? HslColor.textureLightnessToRgb(color3, brightness)
+				: HslColor.toLinearRgb(color3, brightness);
 
 			int ia = vertexBuffer.add(vx[a], vy[a], vz[a], rgbA, alpha, uvA);
 			int ib = vertexBuffer.add(vx[b], vy[b], vz[b], rgbB, alpha, uvB);
