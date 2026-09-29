@@ -31,20 +31,29 @@ import net.runelite.api.Model;
  * written -- worth keeping in mind if this ever needs comparing back
  * against how they did it.
  *
- * <p><b>Known simplification, flagged rather than hidden:</b> a real
- * OSRS face also carries a render priority and a "bias" (see
+ * <p><b>Render priority/bias:</b> a real OSRS face also carries a
+ * render priority and a "bias" (see
  * {@code Model#getFaceRenderPriorities}/{@code getFaceBias}), which the
- * live client uses to resolve draw order for overlapping/coplanar
- * faces during real-time rendering. A frozen, already-composited
- * export doesn't animate or get redrawn from new camera angles the way
- * the live client does, so this builder deliberately leaves both out
- * of the vertex key (unlike RuneProfile's own documented approach,
- * which keeps them as per-vertex data without letting them force a new
- * primitive) -- simpler, and untested against a real model where two
+ * live client uses -- instead of relying on z-buffering alone -- to
+ * resolve draw order for overlapping/near-coplanar faces (the classic
+ * case being a cape or amulet modeled flush against the body, where
+ * true 3D depth is ambiguous or intentionally coincident and the game
+ * depends on this explicit ordering rather than depth to show the
+ * right thing on top). This builder still leaves both out of the
+ * per-vertex dedup key below (unlike RuneProfile's own documented
+ * approach, which keeps them as per-vertex data without letting them
+ * force a new primitive) -- untested against a real model where two
  * faces actually share a position/color/UV but differ only in
  * priority/bias, which in practice is rare enough that leaving it out
- * of a first prototype seemed like a reasonable place to cut scope
- * instead of a reasonable place to introduce a bug.
+ * remains a reasonable place to cut scope rather than a reasonable
+ * place to introduce a bug. Priority/bias ARE now folded into the
+ * PRIMITIVE-splitting key a few lines below, though -- a separate,
+ * coarser use: each (textureId, priority, bias, translucent) triangle
+ * group becomes its own glTF primitive carrying that priority/bias as
+ * {@code extras} (see GlbWriter), so the character-overview viewer can
+ * reproduce the game's own draw-order override via {@code
+ * THREE.Object3D#renderOrder} instead of trusting raw depth alone for
+ * faces the game itself never trusted to raw depth either.
  *
  * <p><b>Confidence note on UVs:</b> the geometry/color/transparency
  * handling below is verified directly against RuneLite's own
@@ -106,6 +115,8 @@ final class ModelMeshBuilder
 		int[] tex3 = model.getTexIndices3();
 
 		byte[] transparencies = model.getFaceTransparencies();
+		byte[] priorities = model.getFaceRenderPriorities();
+		byte[] biases = model.getFaceBias();
 
 		boolean anyTextured = faceTextures != null;
 		if (anyTextured)
@@ -141,11 +152,18 @@ final class ModelMeshBuilder
 				textured = true;
 			}
 
-			long key = ((long) (textureId + 1) << 1) | (translucent ? 1 : 0);
+			int priority = priorities != null ? (priorities[face] & 0xFF) : 0;
+			int bias = biases != null ? (biases[face] & 0xFF) : 0;
+
+			// textureId+1 needs 17 bits (textureId is masked to 0xFFFF, so
+			// +1 can reach 65536); priority and bias are each already
+			// masked to a single byte above, so 8 bits apiece is exactly
+			// enough and nothing here can collide with another face's key.
+			long key = ((long) (textureId + 1) << 17) | ((long) priority << 9) | ((long) bias << 1) | (translucent ? 1 : 0);
 			MeshData.Primitive primitive = primitivesByKey.get(key);
 			if (primitive == null)
 			{
-				primitive = new MeshData.Primitive(textureId, translucent);
+				primitive = new MeshData.Primitive(textureId, translucent, priority, bias);
 				primitivesByKey.put(key, primitive);
 				mesh.primitives.add(primitive);
 			}

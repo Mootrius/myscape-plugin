@@ -272,6 +272,65 @@ public class ModelMeshBuilderTest
 		assertEquals(mesh.positions.size(), mesh.uvs.size());
 	}
 
+	@Test
+	public void differentRenderPriorityOrBias_splitsIntoSeparatePrimitives_evenWithSameTextureAndTranslucency()
+	{
+		// Three faces, all untextured and opaque (so textureId/translucent
+		// alone would put them in ONE primitive under the old key) but
+		// with three different (priority, bias) combinations -- the whole
+		// point of folding priority/bias into the primitive key is that
+		// these must come out as three separate primitives, each able to
+		// carry its own draw-order extras.
+		int hsl = packHsl(0, 0, 64);
+		Model model = FakeModel.builder()
+			.faceCount(3)
+			.vertices(
+				new float[]{0f, 1f, 0f, 5f, 6f, 5f, 10f, 11f, 10f},
+				new float[]{0f, 0f, 1f, 5f, 5f, 6f, 10f, 10f, 11f},
+				new float[]{0f, 0f, 0f, 5f, 5f, 5f, 10f, 10f, 10f})
+			.faceIndices(new int[]{0, 3, 6}, new int[]{1, 4, 7}, new int[]{2, 5, 8})
+			.faceColors(
+				new int[]{hsl, hsl, hsl},
+				new int[]{hsl, hsl, hsl},
+				new int[]{hsl, hsl, hsl})
+			.faceRenderPriorities(new byte[]{0, 5, 5})
+			.faceBias(new byte[]{0, 0, 9})
+			.build();
+
+		MeshData mesh = ModelMeshBuilder.build(model, HslColor.DEFAULT_BRIGHTNESS);
+
+		assertEquals("three distinct (priority, bias) pairs -> three primitives", 3, mesh.primitives.size());
+		java.util.Set<String> seen = new java.util.HashSet<>();
+		for (MeshData.Primitive p : mesh.primitives)
+		{
+			seen.add(p.priority + "," + p.bias);
+		}
+		assertTrue(seen.contains("0,0"));
+		assertTrue(seen.contains("5,0"));
+		assertTrue(seen.contains("5,9"));
+	}
+
+	@Test
+	public void nullRenderPriorityAndBiasArrays_defaultToZero()
+	{
+		// A model that never calls faceRenderPriorities()/faceBias() at
+		// all (FakeModel's own default) must behave exactly as it did
+		// before priority/bias existed -- one primitive, priority 0.
+		int hsl = packHsl(0, 0, 64);
+		Model model = FakeModel.builder()
+			.faceCount(1)
+			.vertices(new float[]{0f, 1f, 0f}, new float[]{0f, 0f, 1f}, new float[]{0f, 0f, 0f})
+			.faceIndices(new int[]{0}, new int[]{1}, new int[]{2})
+			.faceColors(new int[]{hsl}, new int[]{hsl}, new int[]{hsl})
+			.build();
+
+		MeshData mesh = ModelMeshBuilder.build(model, HslColor.DEFAULT_BRIGHTNESS);
+
+		assertEquals(1, mesh.primitives.size());
+		assertEquals(0, mesh.primitives.get(0).priority);
+		assertEquals(0, mesh.primitives.get(0).bias);
+	}
+
 	private static void assertUv(float[] uv, float expectedU, float expectedV)
 	{
 		assertEquals(expectedU, uv[0], EPS);

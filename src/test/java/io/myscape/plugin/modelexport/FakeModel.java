@@ -51,6 +51,8 @@ final class FakeModel
 		private int[] tex2 = {};
 		private int[] tex3 = {};
 		private byte[] transparencies;
+		private byte[] renderPriorities;
+		private byte[] biases;
 
 		Builder faceCount(int faceCount)
 		{
@@ -103,6 +105,18 @@ final class FakeModel
 			return this;
 		}
 
+		Builder faceRenderPriorities(byte[] renderPriorities)
+		{
+			this.renderPriorities = renderPriorities;
+			return this;
+		}
+
+		Builder faceBias(byte[] biases)
+		{
+			this.biases = biases;
+			return this;
+		}
+
 		Model build()
 		{
 			InvocationHandler handler = (proxy, method, args) -> {
@@ -142,6 +156,10 @@ final class FakeModel
 						return tex3;
 					case "getFaceTransparencies":
 						return transparencies;
+					case "getFaceRenderPriorities":
+						return renderPriorities;
+					case "getFaceBias":
+						return biases;
 					case "equals":
 						return proxy == args[0];
 					case "hashCode":

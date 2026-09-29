@@ -31,6 +31,31 @@ package io.myscape.plugin.modelexport;
  * RuneProfile's own documented test: "textured face lightness 127
  * expands to white"). textureLightnessToRgb below is that multiplier
  * path; toLinearRgb is the untextured, full-HSL path.
+ *
+ * <p><b>Color space (fixed after a real in-game comparison showed the
+ * exported model too washed out/low-contrast):</b> the client's own
+ * shader output this class ports (the {@code pow(., brightness)} step
+ * below) is the FINAL, already display-ready pixel value -- the same
+ * bytes the game itself puts on screen, not scene-linear light. glTF's
+ * COLOR_0 accessor, however, is defined by spec as linear, and a
+ * conformant viewer (confirmed directly against three.js's own
+ * GLTFLoader source: it warns about converting vertex colors *from*
+ * "srgb-linear" -- i.e. it takes COLOR_0 as already linear on faith --
+ * then applies its own standard linear-to-sRGB encode for display.
+ * Handing it an already display-space value under that assumption
+ * double-encodes it: the renderer's own encode lifts an already-lifted
+ * value a second time, crushing contrast and washing out shadows
+ * exactly the way the real client's screenshot didn't. Both
+ * toLinearRgb and textureLightnessToRgb below now run their result
+ * through {@link #srgbToLinear}, the standard sRGB decode, specifically
+ * so the SAME value survives that later re-encode unchanged (encode(
+ * decode(x)) == x for the standard sRGB transfer function) -- i.e. this
+ * converts "the pixel value the game would show" into "the linear
+ * value a spec-correct renderer needs to reproduce that same pixel."
+ * embedded baseColorTexture images need no equivalent change: those
+ * are ordinary sRGB-encoded image bytes (standard PNG pixel data,
+ * same as any authored texture asset), which three.js already decodes
+ * correctly on its own via its texture's default sRGB color space.
  */
 final class HslColor
 {
@@ -91,9 +116,9 @@ final class HslColor
 		b = channel(var27, var19, var21);
 
 		return new float[]{
-			(float) Math.pow(clamp01(r), brightness),
-			(float) Math.pow(clamp01(g), brightness),
-			(float) Math.pow(clamp01(b), brightness),
+			srgbToLinear((float) Math.pow(clamp01(r), brightness)),
+			srgbToLinear((float) Math.pow(clamp01(g), brightness)),
+			srgbToLinear((float) Math.pow(clamp01(b), brightness)),
 		};
 	}
 
@@ -130,7 +155,7 @@ final class HslColor
 	static float[] textureLightnessToRgb(int hsl, double brightness)
 	{
 		float lightness = clamp01((hsl & 0x7F) / 127.0f);
-		float v = (float) Math.pow(lightness, brightness);
+		float v = srgbToLinear((float) Math.pow(lightness, brightness));
 		return new float[]{v, v, v};
 	}
 
@@ -145,5 +170,20 @@ final class HslColor
 			return 1f;
 		}
 		return (float) v;
+	}
+
+	/** The standard sRGB EOTF (the "decode to linear" direction) --
+	 * exactly the piecewise curve the glTF spec itself specifies for
+	 * this purpose, and what three.js's own internal SRGBToLinear does
+	 * on the other side. See this class's own top-of-file doc for why
+	 * every color this class returns is passed through this before
+	 * going into a glTF file's COLOR_0. */
+	private static float srgbToLinear(float c)
+	{
+		if (c <= 0.04045f)
+		{
+			return c / 12.92f;
+		}
+		return (float) Math.pow((c + 0.055) / 1.055, 2.4);
 	}
 }

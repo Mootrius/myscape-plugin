@@ -209,6 +209,40 @@ public class GlbWriterTest
 			parsed.json.getAsJsonArray("materials").size());
 	}
 
+	@Test
+	public void primitivesCarryTheirOwnRenderPriorityAndBiasAsExtras()
+	{
+		int hsl = packHsl(0, 0, 64);
+		Model model = FakeModel.builder()
+			.faceCount(2)
+			.vertices(
+				new float[]{0f, 1f, 0f, 5f, 6f, 5f},
+				new float[]{0f, 0f, 1f, 5f, 5f, 6f},
+				new float[]{0f, 0f, 0f, 5f, 5f, 5f})
+			.faceIndices(new int[]{0, 3}, new int[]{1, 4}, new int[]{2, 5})
+			.faceColors(new int[]{hsl, hsl}, new int[]{hsl, hsl}, new int[]{hsl, hsl})
+			.faceRenderPriorities(new byte[]{2, 9})
+			.faceBias(new byte[]{0, 3})
+			.build();
+		MeshData mesh = ModelMeshBuilder.build(model, HslColor.DEFAULT_BRIGHTNESS);
+		assertEquals(2, mesh.primitives.size());
+
+		ParsedGlb parsed = ParsedGlb.parse(GlbWriter.write(mesh));
+
+		JsonArray primitivesJson = parsed.json.getAsJsonArray("meshes").get(0).getAsJsonObject()
+			.getAsJsonArray("primitives");
+		assertEquals(2, primitivesJson.size());
+		java.util.Set<String> seen = new java.util.HashSet<>();
+		for (JsonElement primEl : primitivesJson)
+		{
+			JsonObject extras = primEl.getAsJsonObject().getAsJsonObject("extras");
+			assertTrue("every primitive carries its own osrsPriority/osrsBias extras", extras != null);
+			seen.add(extras.get("osrsPriority").getAsInt() + "," + extras.get("osrsBias").getAsInt());
+		}
+		assertTrue(seen.contains("2,0"));
+		assertTrue(seen.contains("9,3"));
+	}
+
 	/** A small mixed model exercising every branch GlbWriter has to
 	 * handle at once: an untextured opaque triangle, a textured opaque
 	 * triangle (axis-aligned reference triangle, same as

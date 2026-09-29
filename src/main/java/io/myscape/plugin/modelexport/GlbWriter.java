@@ -45,6 +45,18 @@ import java.util.Map;
  * back to the previous flat-vertex-color-only material rather than
  * failing the whole export.
  *
+ * <p><b>Render priority/bias:</b> each primitive also carries its own
+ * OSRS render priority/bias (see MeshData.Primitive's own doc) as a
+ * glTF {@code extras} object -- glTF/three.js have no native concept
+ * of OSRS's own priority-based draw ordering, so this class doesn't
+ * try to resolve it into anything itself; it just carries the raw data
+ * through for the character-overview viewer's own JS to turn into a
+ * {@code THREE.Object3D#renderOrder} after load (see that page's own
+ * comment for why -- in short, OSRS relies on this explicit ordering,
+ * not depth alone, for exactly the flush-against-the-body gear -- a
+ * cape, an amulet -- that a naive z-buffered render can otherwise show
+ * wrong).
+ *
  * <p>Materials use the KHR_materials_unlit extension deliberately:
  * OSRS's own lighting is already fully baked into each face's HSL
  * color by the game engine itself (see HslColor's own doc), so a
@@ -187,6 +199,19 @@ final class GlbWriter
 			primitiveJson.addProperty("indices", indicesAccessor);
 			primitiveJson.addProperty("material", materialIndex);
 			primitiveJson.addProperty("mode", 4); // TRIANGLES
+			// OSRS's own render priority/bias for this primitive's own
+			// faces (see MeshData.Primitive's own doc) -- an ordinary
+			// object under glTF's spec-legal "extras" mechanism, not a
+			// bare number, since three.js's GLTFLoader only copies extras
+			// into userData when they're an object (confirmed against its
+			// own assignExtrasToUserData, which otherwise just warns and
+			// drops it). The character-overview viewer reads this back
+			// off each primitive's own geometry.userData to set
+			// THREE.Object3D#renderOrder -- see pages.py's own comment.
+			JsonObject extras = new JsonObject();
+			extras.addProperty("osrsPriority", primitive.priority);
+			extras.addProperty("osrsBias", primitive.bias);
+			primitiveJson.add("extras", extras);
 			primitivesJson.add(primitiveJson);
 		}
 

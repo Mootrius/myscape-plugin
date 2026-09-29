@@ -5,30 +5,33 @@ import java.util.List;
 
 /**
  * The plain, glTF-shaped result of {@link ModelMeshBuilder#build}: one
- * {@link Primitive} per (texture id, translucent?) pair the source
- * {@code net.runelite.api.Model} actually used, each with its own
- * deduplicated vertex buffers and triangle index list, plus the whole
- * mesh's own bounding box (glTF requires every accessor to state its
- * own min/max, and POSITION's is also what a viewer uses to frame the
- * model on load). Doesn't know anything about GLB/glTF's binary
- * layout itself -- {@link GlbWriter} is what turns this into actual
- * file bytes; this class exists so ModelMeshBuilder's own job (reading
- * the game's model format) stays entirely separate from GlbWriter's
- * (writing glTF's format), each independently testable.
+ * {@link Primitive} per (texture id, priority, bias, translucent?)
+ * combination the source {@code net.runelite.api.Model} actually used,
+ * each with its own deduplicated vertex buffers and triangle index
+ * list, plus the whole mesh's own bounding box (glTF requires every
+ * accessor to state its own min/max, and POSITION's is also what a
+ * viewer uses to frame the model on load). Doesn't know anything about
+ * GLB/glTF's binary layout itself -- {@link GlbWriter} is what turns
+ * this into actual file bytes; this class exists so ModelMeshBuilder's
+ * own job (reading the game's model format) stays entirely separate
+ * from GlbWriter's (writing glTF's format), each independently
+ * testable.
  */
 final class MeshData
 {
 	/**
 	 * One glTF primitive: a run of triangles that all share the same
-	 * texture id and translucency, since those are the two things that
-	 * change which glTF material a triangle needs -- everything else a
-	 * face carries (its per-vertex color, its position) rides along in
-	 * the shared vertex buffers below rather than forcing a split of
-	 * its own. A model with N different textures in view (plus
-	 * possibly one more for "untextured") ends up as N (or N+1)
-	 * primitives, same as RuneProfile's own documented approach -- see
-	 * ModelMeshBuilder's own class doc for why that's the right split
-	 * and not, say, one primitive per priority/bias value too.
+	 * texture id, render priority, bias, and translucency. texture id
+	 * and translucency are what change which glTF *material* a triangle
+	 * needs (see GlbWriter's own materialKey, which deliberately leaves
+	 * priority/bias back out at that level so many primitives can still
+	 * share one material/image); priority and bias split primitives
+	 * further, on top of that, purely so each ends up as its own glTF
+	 * primitive carrying its own {@code extras} for the viewer to turn
+	 * into a draw-order override (see ModelMeshBuilder's own class doc).
+	 * Everything else a face carries (its per-vertex color, its
+	 * position) rides along in the shared vertex buffers below rather
+	 * than forcing a split of its own.
 	 */
 	static final class Primitive
 	{
@@ -44,23 +47,36 @@ final class MeshData
 		 * primitive, so this is GlbWriter's own cue to build this
 		 * primitive's material with alphaMode: BLEND instead of OPAQUE. */
 		final boolean translucent;
+		/** OSRS's own {@code Model#getFaceRenderPriorities()} value (0 if
+		 * the source model carried none), unsigned 0-255 -- see
+		 * ModelMeshBuilder's own class doc for what this is and why
+		 * GlbWriter carries it into the glTF as {@code extras} rather
+		 * than trying to resolve it into actual draw order itself. */
+		final int priority;
+		/** OSRS's own {@code Model#getFaceBias()} value (0 if the source
+		 * model carried none), unsigned 0-255 -- a finer tie-breaker
+		 * within the same priority, same treatment as priority above. */
+		final int bias;
 		/** Triangle corner indices into this MeshData's own positions/
 		 * colors/uvs arrays below (NOT into the source Model's vertex
 		 * array -- see VertexBuffer's own doc in ModelMeshBuilder for why
 		 * those numberings differ). Always a multiple of 3. */
 		final List<Integer> indices = new ArrayList<>();
 
-		Primitive(int textureId, boolean translucent)
+		Primitive(int textureId, boolean translucent, int priority, int bias)
 		{
 			this.textureId = textureId;
 			this.translucent = translucent;
+			this.priority = priority;
+			this.bias = bias;
 		}
 	}
 
 	/** Every primitive this mesh needs, in the order their (textureId,
-	 * translucent) key was first seen while walking the source Model's
-	 * faces -- see ModelMeshBuilder#build. Deliberately not sorted or
-	 * deduplicated any further than that key already guarantees. */
+	 * priority, bias, translucent) key was first seen while walking the
+	 * source Model's faces -- see ModelMeshBuilder#build. Deliberately
+	 * not sorted or deduplicated any further than that key already
+	 * guarantees. */
 	final List<Primitive> primitives = new ArrayList<>();
 
 	/** Deduplicated vertex positions, one {x, y, z} triple per vertex,
