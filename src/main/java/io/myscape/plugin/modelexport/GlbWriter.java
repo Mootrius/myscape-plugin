@@ -7,14 +7,15 @@ import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
  * Serializes a {@link MeshData} into a real binary glTF (.glb) file --
  * the same container (a JSON chunk describing the scene/accessors, plus
- * one binary buffer chunk holding the actual vertex/index bytes, per
- * the glTF 2.0 core spec) that RuneProfile's own plugin produces and
+ * one binary buffer chunk holding the actual vertex/index/image bytes,
+ * per the glTF 2.0 core spec) that RuneProfile's own plugin produces and
  * that @react-three/fiber / three.js load directly, no server-side
  * conversion step needed. Written by hand against the bare glTF 2.0
  * spec (the format's small enough, and a RuneLite plugin already pulls
@@ -24,17 +25,25 @@ import java.util.Map;
  * RuneProfile's own (unseen) source; the JSON shape itself is just
  * standard glTF, not anything RuneProfile-specific.
  *
- * <p><b>Known gap, matching ModelMeshBuilder's own flagged scope:</b>
- * every material this class emits is untextured -- {@code
- * baseColorFactor} stays white and every vertex's own COLOR_0 (from
- * {@link ModelMeshBuilder}) does all the shading. For a textured face
- * that's only the lightness multiplier {@link HslColor#textureLightnessToRgb}
- * baked in, not that face's real texture pixels, since nothing in this
- * package extracts texture images yet (see ModelMeshBuilder's own top
- * comment) -- a model that used a patterned cloth or skin texture
- * in-game will come out of this writer as a flat, correctly-lit but
- * untextured shape. Geometry, color-per-vertex, and transparency are
- * all real; only texture detail is missing.
+ * <p><b>Texture images:</b> a caller that supplies real PNG bytes per
+ * texture id (see {@link #write(MeshData, Map)}, and
+ * {@link TextureExtractor} for how those bytes get pulled off a live
+ * client) gets those images embedded as real glTF {@code images}/
+ * {@code textures} and referenced from each textured primitive's own
+ * material as {@code baseColorTexture} -- {@code baseColorFactor}
+ * stays white and every vertex's own COLOR_0 (from
+ * {@link ModelMeshBuilder}, still just the lightness multiplier {@link
+ * HslColor#textureLightnessToRgb} baked in) keeps doing exactly the
+ * multiplicative shading it always has, since glTF defines COLOR_0,
+ * when present, as multiplied into the sampled base color same as it
+ * multiplies into baseColorFactor -- true of the core metallic-
+ * roughness model and unchanged by KHR_materials_unlit, which only
+ * removes the lighting equation, not that modulation. A primitive
+ * whose texture id has no corresponding entry in the supplied map (no
+ * caller-supplied bytes at all -- see {@link #write(MeshData)} -- or
+ * {@link TextureExtractor} couldn't extract that particular one) falls
+ * back to the previous flat-vertex-color-only material rather than
+ * failing the whole export.
  *
  * <p>Materials use the KHR_materials_unlit extension deliberately:
  * OSRS's own lighting is already fully baked into each face's HSL
@@ -42,7 +51,8 @@ import java.util.Map;
  * physically-based renderer's own extra directional/ambient lighting
  * on top of that would double-light the model and wash out its real
  * shading. Unlit tells a compliant viewer (three.js's GLTFLoader
- * included) to render COLOR_0 * baseColorFactor as-is instead.
+ * included) to render (COLOR_0 * baseColorTexture) * baseColorFactor
+ * as-is instead.
  */
 final class GlbWriter
 {
@@ -64,9 +74,34 @@ final class GlbWriter
 	private static final int TARGET_ARRAY_BUFFER = 34962;
 	private static final int TARGET_ELEMENT_ARRAY_BUFFER = 34963;
 
+	// glTF sampler enums (WebGL/OpenGL's own texture-filter/wrap
+	// constants, reused as-is by the glTF spec).
+	private static final int FILTER_NEAREST = 9728;
+	private static final int WRAP_REPEAT = 10497;
+
 	private static final Gson GSON = new Gson();
 
+	/** Writes {@code mesh} with every material untextured, same as
+	 * before this class could embed real texture images at all -- see
+	 * {@link #write(MeshData, Map)}'s own doc for why that overload is
+	 * preferred whenever the caller actually has texture pixel data
+	 * (e.g. a real client capture, as opposed to a synthetic test
+	 * mesh). */
 	static byte[] write(MeshData mesh)
+	{
+		return write(mesh, Collections.emptyMap());
+	}
+
+	/**
+	 * @param texturePngs PNG bytes per OSRS texture id (see
+	 *                    {@link TextureExtractor#extractPngs}), used to
+	 *                    embed real {@code baseColorTexture} images for
+	 *                    any primitive whose own texture id has an
+	 *                    entry here. Pass {@link Collections#emptyMap()}
+	 *                    (or use {@link #write(MeshData)}) for the old,
+	 *                    flat-vertex-color-only behavior.
+	 */
+	static byte[] write(MeshData mesh, Map<Integer, byte[]> texturePngs)
 	{
 		BinaryBuffer bin = new BinaryBuffer();
 		JsonArray bufferViews = new JsonArray();
@@ -88,6 +123,14 @@ final class GlbWriter
 		JsonArray materialsJson = new JsonArray();
 		Map<Long, Integer> materialIndexByKey = new LinkedHashMap<>();
 
+		JsonArray imagesJson = new JsonArray();
+		JsonArray samplersJson = new JsonArray();
+		JsonArray texturesJson = new JsonArray();
+		// OSRS texture id -> glTF `textures` array index, so the same
+		// texture referenced by several primitives (e.g. the same cloth
+		// pattern on both sleeves) is only embedded once.
+		Map<Integer, Integer> glTfTextureIndexByTextureId = new LinkedHashMap<>();
+
 		for (MeshData.Primitive primitive : mesh.primitives)
 		{
 			if (primitive.indices.isEmpty())
@@ -103,9 +146,30 @@ final class GlbWriter
 			Integer materialIndex = materialIndexByKey.get(materialKey);
 			if (materialIndex == null)
 			{
+				Integer glTfTextureIndex = null;
+				byte[] png = primitive.textureId >= 0 ? texturePngs.get(primitive.textureId) : null;
+				if (png != null)
+				{
+					glTfTextureIndex = glTfTextureIndexByTextureId.get(primitive.textureId);
+					if (glTfTextureIndex == null)
+					{
+						if (samplersJson.size() == 0)
+						{
+							samplersJson.add(buildSampler());
+						}
+						int imageIndex = writeImage(png, bin, bufferViews, imagesJson);
+						JsonObject textureJson = new JsonObject();
+						textureJson.addProperty("sampler", 0);
+						textureJson.addProperty("source", imageIndex);
+						glTfTextureIndex = texturesJson.size();
+						texturesJson.add(textureJson);
+						glTfTextureIndexByTextureId.put(primitive.textureId, glTfTextureIndex);
+					}
+				}
+
 				materialIndex = materialsJson.size();
 				materialIndexByKey.put(materialKey, materialIndex);
-				materialsJson.add(buildMaterial(primitive.translucent));
+				materialsJson.add(buildMaterial(primitive.translucent, glTfTextureIndex));
 			}
 
 			int indicesAccessor = writeIndicesAccessor(primitive.indices, useIntIndices, bin, bufferViews, accessors);
@@ -163,6 +227,12 @@ final class GlbWriter
 		root.add("nodes", nodesJson);
 		root.add("meshes", meshesJson);
 		root.add("materials", materialsJson);
+		if (imagesJson.size() > 0)
+		{
+			root.add("images", imagesJson);
+			root.add("samplers", samplersJson);
+			root.add("textures", texturesJson);
+		}
 		root.add("accessors", accessors);
 		root.add("bufferViews", bufferViews);
 		root.add("buffers", buffersJson);
@@ -171,7 +241,7 @@ final class GlbWriter
 		return assembleGlb(json, bin.toByteArray());
 	}
 
-	private static JsonObject buildMaterial(boolean translucent)
+	private static JsonObject buildMaterial(boolean translucent, Integer glTfTextureIndex)
 	{
 		JsonObject pbr = new JsonObject();
 		JsonArray baseColorFactor = new JsonArray();
@@ -182,6 +252,17 @@ final class GlbWriter
 		pbr.add("baseColorFactor", baseColorFactor);
 		pbr.addProperty("metallicFactor", 0.0f);
 		pbr.addProperty("roughnessFactor", 1.0f);
+		if (glTfTextureIndex != null)
+		{
+			// See this class's own top-of-file doc for why
+			// baseColorFactor staying white and COLOR_0's own
+			// modulation need no change here -- this is purely an
+			// additional reference, not a replacement for either.
+			JsonObject baseColorTexture = new JsonObject();
+			baseColorTexture.addProperty("index", glTfTextureIndex);
+			baseColorTexture.addProperty("texCoord", 0);
+			pbr.add("baseColorTexture", baseColorTexture);
+		}
 
 		JsonObject material = new JsonObject();
 		material.add("pbrMetallicRoughness", pbr);
@@ -197,6 +278,24 @@ final class GlbWriter
 		material.add("extensions", extensions);
 
 		return material;
+	}
+
+	/** One sampler, shared by every embedded texture -- OSRS's own
+	 * renderer samples textures with nearest-neighbor filtering, not
+	 * smoothed/bilinear (see the GPU plugin's own GL_NEAREST choice for
+	 * both min/mag filters, confirmed from its real source), so
+	 * matching that here keeps a captured model's texture detail crisp
+	 * instead of blurring it. Repeat wrap on both axes since a face's
+	 * own UV (see ModelMeshBuilder's own "texture reference triangle"
+	 * doc) isn't guaranteed to stay inside 0..1 for a tiled pattern. */
+	private static JsonObject buildSampler()
+	{
+		JsonObject sampler = new JsonObject();
+		sampler.addProperty("magFilter", FILTER_NEAREST);
+		sampler.addProperty("minFilter", FILTER_NEAREST);
+		sampler.addProperty("wrapS", WRAP_REPEAT);
+		sampler.addProperty("wrapT", WRAP_REPEAT);
+		return sampler;
 	}
 
 	private static int writeVec3Accessor(java.util.List<float[]> vectors, float[] min, float[] max,
@@ -311,6 +410,27 @@ final class GlbWriter
 		return accessorIndex;
 	}
 
+	/** Embeds one already-encoded PNG's bytes into the binary chunk and
+	 * points a new glTF {@code images} entry at them. Returns that
+	 * entry's index. */
+	private static int writeImage(byte[] pngBytes, BinaryBuffer bin, JsonArray bufferViews, JsonArray imagesJson)
+	{
+		bin.align4();
+		int byteOffset = bin.size();
+		bin.writeBytes(pngBytes);
+		int byteLength = pngBytes.length;
+
+		int bufferViewIndex = bufferViews.size();
+		bufferViews.add(buildImageBufferView(byteOffset, byteLength));
+
+		JsonObject image = new JsonObject();
+		image.addProperty("bufferView", bufferViewIndex);
+		image.addProperty("mimeType", "image/png");
+		int imageIndex = imagesJson.size();
+		imagesJson.add(image);
+		return imageIndex;
+	}
+
 	private static JsonObject buildBufferView(int byteOffset, int byteLength, int target)
 	{
 		JsonObject bufferView = new JsonObject();
@@ -318,6 +438,21 @@ final class GlbWriter
 		bufferView.addProperty("byteOffset", byteOffset);
 		bufferView.addProperty("byteLength", byteLength);
 		bufferView.addProperty("target", target);
+		return bufferView;
+	}
+
+	/** Same as {@link #buildBufferView} but with no {@code target} --
+	 * the glTF spec's bufferView.target enum only covers the vertex/
+	 * index buffer roles ({@code ARRAY_BUFFER}/{@code
+	 * ELEMENT_ARRAY_BUFFER}); an image bufferView is neither of those
+	 * and should omit target entirely rather than pick one that doesn't
+	 * really apply. */
+	private static JsonObject buildImageBufferView(int byteOffset, int byteLength)
+	{
+		JsonObject bufferView = new JsonObject();
+		bufferView.addProperty("buffer", 0);
+		bufferView.addProperty("byteOffset", byteOffset);
+		bufferView.addProperty("byteLength", byteLength);
 		return bufferView;
 	}
 
@@ -385,7 +520,9 @@ final class GlbWriter
 	 * plain {@link ByteArrayOutputStream} doesn't expose an endianness
 	 * choice, and every multi-byte value glTF's binary buffer holds
 	 * (float32 positions/colors/uvs, uint16/uint32 indices) is defined
-	 * by the spec as little-endian. */
+	 * by the spec as little-endian. Raw image bytes (PNG) have no
+	 * endianness of their own and are just copied through as-is by
+	 * {@link #writeBytes}. */
 	private static final class BinaryBuffer
 	{
 		private final ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -422,6 +559,11 @@ final class GlbWriter
 			ByteBuffer b = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN);
 			b.putInt(v);
 			out.writeBytes(b.array());
+		}
+
+		void writeBytes(byte[] data)
+		{
+			out.write(data, 0, data.length);
 		}
 
 		byte[] toByteArray()

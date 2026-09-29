@@ -34,6 +34,7 @@ import net.runelite.api.Player;
 import net.runelite.api.Quest;
 import net.runelite.api.QuestState;
 import net.runelite.api.Skill;
+import net.runelite.api.TextureProvider;
 import net.runelite.api.events.ChatMessage;
 import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.GameTick;
@@ -2757,14 +2758,19 @@ public class MyscapePlugin extends Plugin
 			}
 			try
 			{
-				// The live client's own brightness setting where one's
-				// available (its TextureProvider), rather than always
-				// falling back to ModelExporter's own 0.8 default --
+				// The live client's own TextureProvider, where one's
+				// available, for both its brightness setting (rather than
+				// always falling back to ModelExporter's own 0.8 default --
 				// see HslColor#DEFAULT_BRIGHTNESS's own doc in the
 				// modelexport package for why that matters to a player
-				// who's actually moved that slider.
-				byte[] glb = client.getTextureProvider() != null
-					? ModelExporter.captureGlb(model, client.getTextureProvider().getBrightness())
+				// who's actually moved that slider) and its real texture
+				// pixel data (see TextureExtractor's own doc) -- without a
+				// TextureProvider this still captures geometry/color fine,
+				// just with every textured face falling back to flat
+				// vertex-color shading instead of its real texture image.
+				TextureProvider textureProvider = client.getTextureProvider();
+				byte[] glb = textureProvider != null
+					? ModelExporter.captureGlb(model, textureProvider.getBrightness(), textureProvider)
 					: ModelExporter.captureGlb(model);
 				callback.onSuccess(glb);
 			}
