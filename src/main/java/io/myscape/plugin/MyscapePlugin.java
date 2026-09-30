@@ -304,7 +304,17 @@ public class MyscapePlugin extends Plugin
 	// a quirk of Jagex's own internal naming for that one area, not a
 	// mismatch on this end (confirmed against the same numeric ids the
 	// older, manually-maintained net.runelite.api.Varbits class uses for
-	// DIARY_KARAMJA_EASY/MEDIUM/HARD).
+	// DIARY_KARAMJA_EASY/MEDIUM/HARD). Those same three ALSO differ from
+	// every other area's tier varbit (and from Karamja's own elite
+	// varbit) in what "complete" actually means: every other tier
+	// varbit here is a plain 0/1 flag, but ATJUN_EASY_DONE/MED_DONE/
+	// HARD_DONE are documented (OSRS Wiki, RuneScape:Varbit/3578 et al)
+	// as a three-state counter -- 0 not started, 1 started, 2 complete
+	// -- left over from Karamja Diary predating the unified Achievement
+	// Diary system every other area uses. DIARY_TIER_COMPLETE_VALUES
+	// below is what readDiaryTiers checks each tier varbit against
+	// instead of a hardcoded 1, precisely so this one area's quirk
+	// doesn't silently read as "never completes."
 	private static final String[] DIARY_TIER_NAMES = {"easy", "medium", "hard", "elite"};
 	private static final Map<String, int[]> DIARY_TIER_VARBITS = buildDiaryTierVarbits();
 
@@ -360,6 +370,25 @@ public class MyscapePlugin extends Plugin
 			VarbitID.WILDERNESS_DIARY_HARD_COMPLETE, VarbitID.WILDERNESS_DIARY_ELITE_COMPLETE,
 		});
 		return Collections.unmodifiableMap(areas);
+	}
+
+	// Per-area, per-tier "this value means complete" thresholds, same
+	// shape/order/keys as DIARY_TIER_VARBITS above -- every area but
+	// Karamja is {1, 1, 1, 1} (a plain 0/1 flag for all four tiers), and
+	// Karamja is {2, 2, 2, 1}: its easy/medium/hard varbits only reach
+	// 2 on completion (see DIARY_TIER_VARBITS' own comment above), while
+	// its elite varbit (KARAMJA_DIARY_ELITE_COMPLETE) is a normal 0/1
+	// flag like every other area's elite tier.
+	private static final Map<String, int[]> DIARY_TIER_COMPLETE_VALUES = buildDiaryTierCompleteValues();
+
+	private static Map<String, int[]> buildDiaryTierCompleteValues()
+	{
+		Map<String, int[]> values = new LinkedHashMap<>();
+		for (String area : DIARY_TIER_VARBITS.keySet())
+		{
+			values.put(area, area.equals("karamja") ? new int[]{2, 2, 2, 1} : new int[]{1, 1, 1, 1});
+		}
+		return Collections.unmodifiableMap(values);
 	}
 
 	// Every varbit id that appears anywhere in DIARY_TIER_VARBITS above,
@@ -1330,13 +1359,16 @@ public class MyscapePlugin extends Plugin
 	 * DIARY_TIER_VARBITS above) -- an area with nothing completed yet is
 	 * simply left out of the result, matching how Player.diary_tiers only
 	 * ever stores one current tier per area server-side (see that same
-	 * docstring). Each area's 4 varbits are checked low-to-high and this
-	 * stops at the first one that ISN'T set, since the real diary journal
-	 * only ever lets a player finish a tier once every lower tier is
-	 * already done -- there's no such thing as Hard being complete while
-	 * Medium isn't, so nothing here needs to handle that. Must only ever
-	 * be called from the client thread, same as the other readXItems
-	 * methods above (both call sites below already guarantee that). */
+	 * docstring). Each area's 4 varbits are checked low-to-high against
+	 * that same tier's DIARY_TIER_COMPLETE_VALUES threshold (1 for every
+	 * area/tier except Karamja's easy/medium/hard, which complete at 2 --
+	 * see that map's own doc), and this stops at the first one that
+	 * hasn't reached it, since the real diary journal only ever lets a
+	 * player finish a tier once every lower tier is already done --
+	 * there's no such thing as Hard being complete while Medium isn't, so
+	 * nothing here needs to handle that. Must only ever be called from
+	 * the client thread, same as the other readXItems methods above
+	 * (both call sites below already guarantee that). */
 	private List<MyscapeClient.DiaryTierItem> readDiaryTiers()
 	{
 		List<MyscapeClient.DiaryTierItem> items = new ArrayList<>();
@@ -1344,10 +1376,11 @@ public class MyscapePlugin extends Plugin
 		{
 			String area = entry.getKey();
 			int[] tierVarbits = entry.getValue();
+			int[] completeValues = DIARY_TIER_COMPLETE_VALUES.get(area);
 			String highestTier = null;
 			for (int i = 0; i < tierVarbits.length; i++)
 			{
-				if (client.getVarbitValue(tierVarbits[i]) != 1)
+				if (client.getVarbitValue(tierVarbits[i]) < completeValues[i])
 				{
 					break;
 				}
