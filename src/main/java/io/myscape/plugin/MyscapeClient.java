@@ -495,13 +495,25 @@ class MyscapeClient
 		final int combatTasksTotal;
 		final int collectionsCompleted;
 		final int collectionsTotal;
+		// Easy/Medium/Hard/Elite/Master/Grandmaster completed-task
+		// counts, in that order (same order as MyscapePlugin's own
+		// COMBAT_ACHIEVEMENT_COMPLETED_VARBITS, which this is read
+		// from -- see patchCombatAchievementStats) -- combatTasksCompleted
+		// above is just these six summed, kept for backward
+		// compatibility with the aggregate stat the Character Summary
+		// panel itself shows. No equivalent per-tier total array: like
+		// combatTasksTotal above, each tier's total task count is fixed
+		// game content the server already knows, not something synced
+		// live from here.
+		final int[] combatTaskTierCompleted;
 
 		CharacterSummaryItem(
 			double combatLevel, int totalLevel, long totalXp,
 			int questsCompleted, int questsTotal,
 			int achievementsCompleted, int achievementsTotal,
 			int combatTasksCompleted, int combatTasksTotal,
-			int collectionsCompleted, int collectionsTotal)
+			int collectionsCompleted, int collectionsTotal,
+			int[] combatTaskTierCompleted)
 		{
 			this.combatLevel = combatLevel;
 			this.totalLevel = totalLevel;
@@ -514,6 +526,7 @@ class MyscapeClient
 			this.combatTasksTotal = combatTasksTotal;
 			this.collectionsCompleted = collectionsCompleted;
 			this.collectionsTotal = collectionsTotal;
+			this.combatTaskTierCompleted = combatTaskTierCompleted;
 		}
 	}
 
@@ -1142,15 +1155,29 @@ class MyscapeClient
 	 * case-insensitively against a blue goal node's chosen quest
 	 * server-side, so this doesn't need to normalize anything itself.
 	 * Always a full replace, like every other current-state sync here. */
-	void syncQuests(List<String> completedQuestNames, SyncCallback callback)
+	void syncQuests(List<String> completedQuestNames, List<String> inProgressQuestNames, SyncCallback callback)
 	{
 		JsonArray questsJson = new JsonArray();
 		for (String name : completedQuestNames)
 		{
 			questsJson.add(name);
 		}
+		JsonArray inProgressJson = new JsonArray();
+		for (String name : inProgressQuestNames)
+		{
+			inProgressJson.add(name);
+		}
 		JsonObject body = new JsonObject();
 		body.add("completed_quests", questsJson);
+		// New alongside completed_quests, not replacing it -- every
+		// quest/miniquest QuestState.IN_PROGRESS has seen this session
+		// (see MyscapePlugin#readInProgressQuestNames), for Character
+		// Overview's quest list section's yellow ("started but not
+		// finished") state. A quest in neither list reads as red ("not
+		// started") server-side, not as an unsynced-vs-not-started
+		// ambiguity -- same full-replace-on-every-sync semantics as
+        // completed_quests already has.
+		body.add("in_progress_quests", inProgressJson);
 		syncPayload("/api/players/me/quests", body, "quest_count", callback);
 	}
 
@@ -1219,6 +1246,17 @@ class MyscapeClient
 		body.addProperty("combat_tasks_total", summary.combatTasksTotal);
 		body.addProperty("collections_completed", summary.collectionsCompleted);
 		body.addProperty("collections_total", summary.collectionsTotal);
+		// Keyed by tier name rather than sent as a bare array -- self-
+		// documenting on the wire, and matches syncDiaries' own
+		// area-keyed shape below rather than relying on the six tiers'
+		// array order being implicitly understood server-side too.
+		String[] tierNames = {"easy", "medium", "hard", "elite", "master", "grandmaster"};
+		JsonObject tierJson = new JsonObject();
+		for (int i = 0; i < tierNames.length && i < summary.combatTaskTierCompleted.length; i++)
+		{
+			tierJson.addProperty(tierNames[i], summary.combatTaskTierCompleted[i]);
+		}
+		body.add("combat_task_tier_completed", tierJson);
 		syncPayload("/api/players/me/character-summary", body, "stat_count", callback);
 	}
 

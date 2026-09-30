@@ -535,6 +535,12 @@ public class MyscapePlugin extends Plugin
 	// report from the first tick).
 	private volatile List<MyscapeClient.SkillItem> latestSkillItems;
 	private volatile List<String> latestCompletedQuestNames;
+	// Same deal as latestCompletedQuestNames above, but for
+	// QuestState.IN_PROGRESS instead of FINISHED -- see
+	// readInProgressQuestNames' own doc below. Added for Character
+	// Overview's quest list section (red/yellow/green per quest),
+	// which needs a third state beyond just "done"/"not done".
+	private volatile List<String> latestInProgressQuestNames;
 	private volatile List<MyscapeClient.DiaryTierItem> latestDiaryTierItems;
 
 	// The collection log's per-item obtained/quantity state, unlike
@@ -771,6 +777,7 @@ public class MyscapePlugin extends Plugin
 		latestSeedBoxItems = null;
 		latestSkillItems = null;
 		latestCompletedQuestNames = null;
+		latestInProgressQuestNames = null;
 		latestDiaryTierItems = null;
 		masterScrollBookDirty = false;
 		latestMasterScrollBookItems = null;
@@ -1291,6 +1298,26 @@ public class MyscapePlugin extends Plugin
 		for (Quest quest : Quest.values())
 		{
 			if (quest.getState(client) == QuestState.FINISHED)
+			{
+				names.add(quest.getName());
+			}
+		}
+		return names;
+	}
+
+	/** Same scan as readCompletedQuestNames above, but collecting every
+	 * quest/miniquest QuestState.IN_PROGRESS instead of FINISHED --
+	 * Character Overview's quest list section uses this, alongside
+	 * completed_quests, to tell "started but not finished" (yellow)
+	 * apart from "never started" (red, i.e. absent from both lists) --
+	 * see Player.completed_quests' docstring in the Mootrius/myscape
+	 * repo's app/models.py for the server-side field this feeds. */
+	private List<String> readInProgressQuestNames()
+	{
+		List<String> names = new ArrayList<>();
+		for (Quest quest : Quest.values())
+		{
+			if (quest.getState(client) == QuestState.IN_PROGRESS)
 			{
 				names.add(quest.getName());
 			}
@@ -2053,7 +2080,15 @@ public class MyscapePlugin extends Plugin
 			quests[0], quests[1],
 			achievements[0], achievements[1],
 			combatTasks[0], combatTasks[1],
-			collections[0], collections[1]);
+			collections[0], collections[1],
+			// Per-tier combat achievement counts aren't shown on this
+			// panel at all (just the combatTasks fraction above), so
+			// this baseline read has nothing to put here -- zeroed out
+			// and left for patchCombatAchievementStats (which runs
+			// moments later off the same onGameTick pass, see
+			// combatAchievementsDirty's own doc) to fill in for real,
+			// same as this field's own doc describes.
+			new int[COMBAT_ACHIEVEMENT_COMPLETED_VARBITS.length]);
 	}
 
 	/** children[index], or null if index is out of bounds -- guards
@@ -2236,7 +2271,8 @@ public class MyscapePlugin extends Plugin
 			prev.questsCompleted, prev.questsTotal,
 			prev.achievementsCompleted, prev.achievementsTotal,
 			prev.combatTasksCompleted, prev.combatTasksTotal,
-			prev.collectionsCompleted, prev.collectionsTotal));
+			prev.collectionsCompleted, prev.collectionsTotal,
+			prev.combatTaskTierCompleted));
 	}
 
 	/** Patches questsCompleted/questsTotal onto latestCharacterSummary
@@ -2259,7 +2295,8 @@ public class MyscapePlugin extends Plugin
 			completed, total,
 			prev.achievementsCompleted, prev.achievementsTotal,
 			prev.combatTasksCompleted, prev.combatTasksTotal,
-			prev.collectionsCompleted, prev.collectionsTotal));
+			prev.collectionsCompleted, prev.collectionsTotal,
+			prev.combatTaskTierCompleted));
 	}
 
 	/** Patches achievementsCompleted/achievementsTotal onto
@@ -2304,30 +2341,40 @@ public class MyscapePlugin extends Plugin
 			prev.questsCompleted, prev.questsTotal,
 			finalCompleted, total,
 			prev.combatTasksCompleted, prev.combatTasksTotal,
-			prev.collectionsCompleted, prev.collectionsTotal));
+			prev.collectionsCompleted, prev.collectionsTotal,
+			prev.combatTaskTierCompleted));
 	}
 
 	/** Patches combatTasksCompleted onto latestCharacterSummary by
 	 * summing COMBAT_ACHIEVEMENT_COMPLETED_VARBITS' six current values
 	 * directly -- never combatTasksTotal, which has no equivalent live
 	 * varbit and so is left exactly as the last Character Summary panel
-	 * read set it (see combatAchievementsDirty's own doc). */
+	 * read set it (see combatAchievementsDirty's own doc). Also patches
+	 * combatTaskTierCompleted with those same six values kept separate
+	 * (easy..grandmaster, same order as COMBAT_ACHIEVEMENT_COMPLETED_
+	 * VARBITS itself) -- Character Overview's combat achievements
+	 * section needs the per-tier breakdown, not just the sum. */
 	private void patchCombatAchievementStats()
 	{
 		int completed = 0;
-		for (int varbitId : COMBAT_ACHIEVEMENT_COMPLETED_VARBITS)
+		int[] tierCompleted = new int[COMBAT_ACHIEVEMENT_COMPLETED_VARBITS.length];
+		for (int i = 0; i < COMBAT_ACHIEVEMENT_COMPLETED_VARBITS.length; i++)
 		{
-			completed += client.getVarbitValue(varbitId);
+			int value = client.getVarbitValue(COMBAT_ACHIEVEMENT_COMPLETED_VARBITS[i]);
+			tierCompleted[i] = value;
+			completed += value;
 		}
-		// See patchCombatAndTotalStats's own comment on why this final
-		// copy is needed.
+		// See patchCombatAndTotalStats's own comment on why these final
+		// copies are needed.
 		final int finalCompleted = completed;
+		final int[] finalTierCompleted = tierCompleted;
 		patchCharacterSummary(prev -> new MyscapeClient.CharacterSummaryItem(
 			prev.combatLevel, prev.totalLevel, prev.totalXp,
 			prev.questsCompleted, prev.questsTotal,
 			prev.achievementsCompleted, prev.achievementsTotal,
 			finalCompleted, prev.combatTasksTotal,
-			prev.collectionsCompleted, prev.collectionsTotal));
+			prev.collectionsCompleted, prev.collectionsTotal,
+			finalTierCompleted));
 	}
 
 	/** Patches collectionsCompleted/collectionsTotal onto
@@ -2357,7 +2404,8 @@ public class MyscapePlugin extends Plugin
 			prev.questsCompleted, prev.questsTotal,
 			prev.achievementsCompleted, prev.achievementsTotal,
 			prev.combatTasksCompleted, prev.combatTasksTotal,
-			completed, total));
+			completed, total,
+			prev.combatTaskTierCompleted));
 	}
 
 	/** Whether varbitId is one of the 12 Rune Pouch type/quantity slot
@@ -2438,7 +2486,8 @@ public class MyscapePlugin extends Plugin
 						latestPotionStorageItems, latestRunePouchItems, latestLootingBagItems,
 						latestSeedVaultItems, latestTackleBoxItems, latestPohItems,
 						latestForestryKitItems, latestSeedBoxItems, latestMasterScrollBookItems,
-						latestSkillItems, latestCompletedQuestNames, latestDiaryTierItems,
+						latestSkillItems, latestCompletedQuestNames, latestInProgressQuestNames,
+						latestDiaryTierItems,
 						latestHuntsmansKitItems, latestBoatCargo1Items, latestBoatCargo2Items,
 						latestBoatCargo3Items, latestBoatCargo4Items, latestBoatCargo5Items,
 						latestCharacterSummary, latestCollectionLogItems);
@@ -2549,6 +2598,7 @@ public class MyscapePlugin extends Plugin
 			{
 				questsDirty = false;
 				latestCompletedQuestNames = readCompletedQuestNames();
+				latestInProgressQuestNames = readInProgressQuestNames();
 				scheduleSyncDebounced();
 				patchQuestStats();
 			}
@@ -2751,6 +2801,7 @@ public class MyscapePlugin extends Plugin
 				// each.
 				latestSkillItems = readSkills();
 				latestCompletedQuestNames = readCompletedQuestNames();
+				latestInProgressQuestNames = readInProgressQuestNames();
 				latestDiaryTierItems = readDiaryTiers();
 				scheduleSyncDebounced();
 			}
