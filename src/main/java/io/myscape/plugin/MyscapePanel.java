@@ -867,8 +867,35 @@ class MyscapePanel extends PluginPanel
 		}
 		if (collectionLogItems != null)
 		{
-			client.syncCollectionLogItems(collectionLogItems, syncCallback());
+			client.syncCollectionLogItems(collectionLogItems, collectionLogSyncCallback());
 		}
+	}
+
+	/** Same shape as the plain syncCallback() above, but -- per explicit
+	 * instruction -- reports the result directly in the chatbox via
+	 * MyscapePlugin#showCollectionLogSyncResult instead of staying
+	 * silent, since a real failure of this specific sync once went
+	 * unnoticed for a long time with the collection log page simply
+	 * never populating and nothing anywhere to explain why. Every other
+	 * background sync in this panel stays silent on purpose (see
+	 * syncCallback's own doc) -- this one is the deliberate exception,
+	 * not a template for the rest. */
+	private MyscapeClient.SyncCallback collectionLogSyncCallback()
+	{
+		return new MyscapeClient.SyncCallback()
+		{
+			@Override
+			public void onSuccess(int itemCount)
+			{
+				plugin.showCollectionLogSyncResult(true);
+			}
+
+			@Override
+			public void onFailure(String message)
+			{
+				plugin.showCollectionLogSyncResult(false);
+			}
+		};
 	}
 
 	/** Called by the plugin (see MyscapePlugin#onLootReceived) the
