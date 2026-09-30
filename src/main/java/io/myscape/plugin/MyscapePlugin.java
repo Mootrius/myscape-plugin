@@ -2681,6 +2681,24 @@ public class MyscapePlugin extends Plugin
 				{
 					latestCharacterSummary = summary;
 					scheduleSyncDebounced();
+					// readCharacterSummary above deliberately zeroes
+					// combatTaskTierCompleted (see its own comment) and
+					// relies on patchCombatAchievementStats to fill it
+					// in for real -- but that only otherwise runs when
+					// combatAchievementsDirty happens to already be
+					// true, which isn't guaranteed on the very tick this
+					// baseline is first established (nor on any tick
+					// before the player next completes a fresh combat
+					// achievement task). Calling it here too means the
+					// per-tier breakdown is correct from the moment the
+					// Character Summary panel is first opened, not just
+					// from the next task completed afterward -- the gap
+					// this closes is exactly why an account with
+					// pre-existing combat achievement progress could
+					// open the panel and still see nothing but em
+					// dashes on the website's Combat Achievements
+					// section.
+					patchCombatAchievementStats();
 				}
 			}
 
