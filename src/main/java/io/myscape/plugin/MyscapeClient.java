@@ -431,6 +431,29 @@ class MyscapeClient
 		}
 	}
 
+	/** One collection log item the player has obtained, and its
+	 * quantity -- see GameAccount.collection_log_items' own docstring
+	 * in the Mootrius/myscape repo's app/models.py for the server
+	 * side, and CollectionLogItemCapture (io.myscape.plugin.
+	 * collectionlog) for how this is actually captured at all (unlike
+	 * SkillItem/DiaryTierItem above, it isn't cache data -- the
+	 * collection log widget has to actually be opened in-game). No
+	 * itemName field, unlike BankItem/InventoryItem/etc above: every
+	 * collection log item id is a real, permanent, already-known id
+	 * (see app/collectionlog.py server-side), so there's no
+	 * untradeable-item-name-matching role for one to play here. */
+	static final class CollectionLogItem
+	{
+		final int itemId;
+		final int quantity;
+
+		CollectionLogItem(int itemId, int quantity)
+		{
+			this.itemId = itemId;
+			this.quantity = quantity;
+		}
+	}
+
 	/** The seven Character Summary stats shown on the "Character Summary"
 	 * tab of the quest journal's Account Summary sidepanel. Originally
 	 * this was ONLY ever readable while that specific tab was open in-
@@ -1150,6 +1173,27 @@ class MyscapeClient
 		JsonObject body = new JsonObject();
 		body.add("diary_tiers", diariesJson);
 		syncPayload("/api/players/me/diaries", body, "area_count", callback);
+	}
+
+	/** Sends every collection log item the player has obtained, and its
+	 * quantity (POST /api/players/me/collection-log -- see app/main.py
+	 * in the Mootrius/myscape repo) -- see CollectionLogItem's own doc
+	 * above for how this is actually captured. Always a full replace,
+	 * like every other current-state sync here -- the plugin always
+	 * hands over its complete accumulated snapshot (see
+	 * CollectionLogItemCapture#snapshotCapturedItems), never just
+	 * whatever changed since the last sync. */
+	void syncCollectionLogItems(List<CollectionLogItem> items, SyncCallback callback)
+	{
+		JsonArray itemsJson = new JsonArray();
+		for (CollectionLogItem item : items)
+		{
+			JsonObject itemJson = new JsonObject();
+			itemJson.addProperty("item_id", item.itemId);
+			itemJson.addProperty("quantity", item.quantity);
+			itemsJson.add(itemJson);
+		}
+		syncItems("/api/players/me/collection-log", itemsJson, callback);
 	}
 
 	/** Sends the seven Character Summary stats (POST

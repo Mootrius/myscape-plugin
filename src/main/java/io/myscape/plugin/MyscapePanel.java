@@ -740,8 +740,8 @@ class MyscapePanel extends PluginPanel
 	/** Called by the plugin (see MyscapePlugin#scheduleSyncDebounced),
 	 * off the EDT, once bank/inventory/equipment/potion storage/rune
 	 * pouch/looting bag/seed vault/tackle box/PoH/Forestry Kit/Seed Box/
-	 * Huntsman's Kit/each boat's Cargo Hold/skills/quests/diaries have
-	 * settled after a change --
+	 * Huntsman's Kit/each boat's Cargo Hold/skills/quests/diaries/
+	 * collection log items have settled after a change --
 	 * syncs whichever of these
 	 * have actually been observed this session (any
 	 * argument may be null; see the field docs on MyscapePlugin's
@@ -781,7 +781,8 @@ class MyscapePanel extends PluginPanel
 		List<MyscapeClient.BoatCargoItem> boatCargo3Items,
 		List<MyscapeClient.BoatCargoItem> boatCargo4Items,
 		List<MyscapeClient.BoatCargoItem> boatCargo5Items,
-		MyscapeClient.CharacterSummaryItem characterSummary)
+		MyscapeClient.CharacterSummaryItem characterSummary,
+		List<MyscapeClient.CollectionLogItem> collectionLogItems)
 	{
 		if (bankItems != null)
 		{
@@ -870,6 +871,10 @@ class MyscapePanel extends PluginPanel
 		if (characterSummary != null)
 		{
 			client.syncCharacterSummary(characterSummary, syncCallback());
+		}
+		if (collectionLogItems != null)
+		{
+			client.syncCollectionLogItems(collectionLogItems, syncCallback());
 		}
 	}
 

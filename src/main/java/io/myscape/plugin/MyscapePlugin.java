@@ -546,14 +546,11 @@ public class MyscapePlugin extends Plugin
 	// least once this session (there is no equivalent of inventory/
 	// equipment's login-time freebie here). Set from onGameTick below,
 	// the tick collectionLogItemCapture itself decides a capture pass
-	// has settled -- see its onGameTick doc. Item id -> quantity, in
-	// the same id space CollectionLogSchemaExporter's own exported
-	// schema already uses. Not yet threaded into the sync pipeline
-	// (no MyscapeClient.syncCollectionLogItems, no scheduleSyncDebounced
-	// call here) -- that's the next step once this capture itself is in
-	// place.
+	// has settled -- see its onGameTick doc. Item ids here are in the
+	// same id space CollectionLogSchemaExporter's own exported schema
+	// already uses.
 	private final CollectionLogItemCapture collectionLogItemCapture = new CollectionLogItemCapture();
-	private volatile Map<Integer, Integer> latestCollectionLogItems;
+	private volatile List<MyscapeClient.CollectionLogItem> latestCollectionLogItems;
 
 	// The Master Scroll Book, unlike every other source above, isn't
 	// backed by a RuneLite ItemContainer -- two rounds of diagnostics
@@ -2396,8 +2393,8 @@ public class MyscapePlugin extends Plugin
 	/** (Re)schedules the single shared debounce task -- shared across
 	 * bank/inventory/equipment/potion storage/rune pouch/looting bag/
 	 * seed vault/tackle box/PoH/Forestry Kit/Seed Box/Master Scroll
-	 * Book/skills/quests/diaries rather than one per source, since
-	 * a player actively shopping or grinding typically touches more
+	 * Book/skills/quests/diaries/collection log items rather than one
+	 * per source, since a player actively shopping or grinding typically touches more
 	 * than one of them in the same burst (withdrawing from the bank,
 	 * then equipping what they withdrew; training a skill while also
 	 * banking its product),
@@ -2444,7 +2441,7 @@ public class MyscapePlugin extends Plugin
 						latestSkillItems, latestCompletedQuestNames, latestDiaryTierItems,
 						latestHuntsmansKitItems, latestBoatCargo1Items, latestBoatCargo2Items,
 						latestBoatCargo3Items, latestBoatCargo4Items, latestBoatCargo5Items,
-						latestCharacterSummary);
+						latestCharacterSummary, latestCollectionLogItems);
 				}
 			},
 			delaySeconds, TimeUnit.SECONDS);
@@ -2600,7 +2597,13 @@ public class MyscapePlugin extends Plugin
 			// is therefore finished. See its own onGameTick doc.
 			if (collectionLogItemCapture.onGameTick(client))
 			{
-				latestCollectionLogItems = collectionLogItemCapture.snapshotCapturedItems();
+				List<MyscapeClient.CollectionLogItem> items = new ArrayList<>();
+				for (Map.Entry<Integer, Integer> entry : collectionLogItemCapture.snapshotCapturedItems().entrySet())
+				{
+					items.add(new MyscapeClient.CollectionLogItem(entry.getKey(), entry.getValue()));
+				}
+				latestCollectionLogItems = items;
+				scheduleSyncDebounced();
 			}
 
 			// Same deal, for the Master Scroll Book (see
