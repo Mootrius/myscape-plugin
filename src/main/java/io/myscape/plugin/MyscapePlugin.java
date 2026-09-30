@@ -52,8 +52,6 @@ import net.runelite.api.gameval.VarbitID;
 import net.runelite.api.gameval.VarPlayerID;
 import net.runelite.api.widgets.Widget;
 import net.runelite.client.callback.ClientThread;
-import net.runelite.client.chat.ChatMessageManager;
-import net.runelite.client.chat.QueuedMessage;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.events.ConfigChanged;
@@ -131,9 +129,6 @@ public class MyscapePlugin extends Plugin
 
 	@Inject
 	private ItemManager itemManager;
-
-	@Inject
-	private ChatMessageManager chatMessageManager;
 
 	// The website no longer has its own "Unlink" button (that action now
 	// lives only in this plugin's sidebar), so there's no longer a way
@@ -1912,34 +1907,6 @@ public class MyscapePlugin extends Plugin
 	{
 		collectionLogItemCapture.onScriptPreFired(
 			event.getScriptId(), event.getScriptEvent().getArguments(), client);
-	}
-
-	/** Reports the result of the most recent collection log sync
-	 * directly in the chatbox -- called by MyscapePanel#syncInBackground
-	 * once its own collection log POST resolves either way. Every other
-	 * background sync in this plugin fails (and succeeds) completely
-	 * silently by design (see MyscapePanel#syncCallback's own doc) --
-	 * this one deliberately doesn't, per explicit instruction, since a
-	 * real collection log sync failure once went unnoticed for a long
-	 * time with no symptom beyond the website's collection log page
-	 * simply never populating.
-	 *
-	 * <p>ChatMessageManager#queue is safe to call from any thread (it
-	 * hops to the client thread internally), which matters here since
-	 * this is invoked from the sync HTTP callback -- an OkHttp
-	 * dispatcher thread, not the client thread. ChatMessageType.CONSOLE
-	 * is the same type RuneLite's own bundled plugins use for a
-	 * plugin-originated status line (a screenshot confirmation, for
-	 * instance) rather than pretending to be a real game message. */
-	void showCollectionLogSyncResult(boolean success)
-	{
-		String message = success
-			? "Collection log data sync to myscape SUCCEEDED."
-			: "Collection log data sync to myscape FAILED.";
-		chatMessageManager.queue(QueuedMessage.builder()
-			.type(ChatMessageType.CONSOLE)
-			.runeLiteFormattedMessage(message)
-			.build());
 	}
 
 	/** Fires once per skill the instant its xp, real level, or boosted
