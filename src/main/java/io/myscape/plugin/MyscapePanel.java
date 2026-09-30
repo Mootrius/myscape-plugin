@@ -116,15 +116,13 @@ class MyscapePanel extends PluginPanel
 	private final JButton unlinkButton = new JButton("UNLINK");
 	private final JLabel unlinkErrorLabel = new JLabel();
 
-	// The "Export 3D model" button and its own status/error line, right
+	// The "UPDATE PLAYER MODEL" button and its own error line, right
 	// below the Status section's toggle -- see buildLinkedCard() and
-	// onExportModelClicked(). exportModelStatusLabel doubles as both
-	// the error color (see onExportModelClicked's failure branch) and
-	// the site's own completed-progress green on success, the same
-	// two-color reuse renderStatusRow() already does for the Status
-	// table's own value cells, rather than this needing a second label
-	// just for the success case.
-	private final JButton exportModelButton = new JButton("Export 3D model");
+	// onExportModelClicked(). exportModelStatusLabel only ever shows
+	// the failure case (PROGRESS_ERROR_COLOR) -- a successful upload
+	// just re-enables the button and leaves this hidden, with no
+	// separate confirmation text.
+	private final JButton exportModelButton = new JButton("UPDATE PLAYER MODEL");
 	private final JLabel exportModelStatusLabel = new JLabel();
 
 	// The Status section's own per-storage status-value cells (see
@@ -401,7 +399,7 @@ class MyscapePanel extends PluginPanel
 		errorConstraints.insets = new Insets(6, 0, 0, 0);
 		panel.add(unlinkErrorLabel, errorConstraints);
 
-		// "Export 3D model" -- captures the local player's current
+		// "UPDATE PLAYER MODEL" -- captures the local player's current
 		// composited model (base skeleton + every equipped item + pose)
 		// via MyscapePlugin#captureCharacterModel and uploads it to
 		// myscape.io for Character Overview's 3D viewer (see
@@ -409,8 +407,7 @@ class MyscapePanel extends PluginPanel
 		// its own small block within the same single-column grid --
 		// same button styling as unlinkButton, and the same
 		// text-status-label-below-a-button shape as the link card's own
-		// linkErrorLabel, just reused here for a success message too
-		// (see exportModelStatusLabel's own field doc).
+		// linkErrorLabel (see exportModelStatusLabel's own field doc).
 		exportModelButton.addActionListener(this::onExportModelClicked);
 		GridBagConstraints exportButtonConstraints = new GridBagConstraints();
 		exportButtonConstraints.gridx = 0;
@@ -703,12 +700,7 @@ class MyscapePanel extends PluginPanel
 					@Override
 					public void onSuccess(int byteCount)
 					{
-						SwingUtilities.invokeLater(() -> {
-							exportModelButton.setEnabled(true);
-							exportModelStatusLabel.setForeground(ColorScheme.PROGRESS_COMPLETE_COLOR);
-							exportModelStatusLabel.setText("<html>Uploaded -- see it on myscape.io's Character Overview.</html>");
-							exportModelStatusLabel.setVisible(true);
-						});
+						SwingUtilities.invokeLater(() -> exportModelButton.setEnabled(true));
 					}
 
 					@Override

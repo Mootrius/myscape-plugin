@@ -2896,7 +2896,7 @@ public class MyscapePlugin extends Plugin
 	 * composited by the game engine exactly as
 	 * {@code Renderable#getModel()} hands it to the client's own
 	 * renderer -- as a standalone .glb file, for MyscapePanel's
-	 * "Export 3D model" button (see MyscapeClient#syncCharacterModel
+	 * "UPDATE PLAYER MODEL" button (see MyscapeClient#syncCharacterModel
 	 * for what happens to the bytes next). See package
 	 * io.myscape.plugin.modelexport's own docs (ModelExporter,
 	 * ModelMeshBuilder, GlbWriter) for the actual conversion.
