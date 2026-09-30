@@ -1,6 +1,7 @@
 package io.myscape.plugin;
 
 import com.google.inject.Provides;
+import io.myscape.plugin.collectionlog.CollectionLogItemCapture;
 import io.myscape.plugin.modelexport.ModelExporter;
 import java.awt.image.BufferedImage;
 import java.time.Instant;
@@ -39,6 +40,8 @@ import net.runelite.api.events.ChatMessage;
 import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.events.ItemContainerChanged;
+import net.runelite.api.events.ScriptPostFired;
+import net.runelite.api.events.ScriptPreFired;
 import net.runelite.api.events.StatChanged;
 import net.runelite.api.events.VarbitChanged;
 import net.runelite.api.events.WidgetLoaded;
@@ -533,6 +536,24 @@ public class MyscapePlugin extends Plugin
 	private volatile List<MyscapeClient.SkillItem> latestSkillItems;
 	private volatile List<String> latestCompletedQuestNames;
 	private volatile List<MyscapeClient.DiaryTierItem> latestDiaryTierItems;
+
+	// The collection log's per-item obtained/quantity state, unlike
+	// every other source above, isn't read passively off an
+	// ItemContainer/varbit/widget at all -- collectionLogItemCapture
+	// (see its own class doc) has to actively re-trigger the collection
+	// log interface's own refresh to make the client hand this over,
+	// and only once the player has opened the collection log widget at
+	// least once this session (there is no equivalent of inventory/
+	// equipment's login-time freebie here). Set from onGameTick below,
+	// the tick collectionLogItemCapture itself decides a capture pass
+	// has settled -- see its onGameTick doc. Item id -> quantity, in
+	// the same id space CollectionLogSchemaExporter's own exported
+	// schema already uses. Not yet threaded into the sync pipeline
+	// (no MyscapeClient.syncCollectionLogItems, no scheduleSyncDebounced
+	// call here) -- that's the next step once this capture itself is in
+	// place.
+	private final CollectionLogItemCapture collectionLogItemCapture = new CollectionLogItemCapture();
+	private volatile Map<Integer, Integer> latestCollectionLogItems;
 
 	// The Master Scroll Book, unlike every other source above, isn't
 	// backed by a RuneLite ItemContainer -- two rounds of diagnostics
@@ -1799,6 +1820,36 @@ public class MyscapePlugin extends Plugin
 		{
 			combatAchievementsDirty = true;
 		}
+		if (varbitId == VarbitID.COLLECTION_POH_HOST_BOOK_OPEN)
+		{
+			collectionLogItemCapture.onAdventureLogVarbitChanged(client);
+		}
+	}
+
+	/** Fires the moment the collection log widget's own setup script
+	 * runs -- both the first time a player opens it this session and
+	 * (as a side effect of collectionLogItemCapture's own re-trigger)
+	 * every time after, so collectionLogItemCapture itself is what
+	 * tells those two cases apart (see its onCollectionLogOpened doc).
+	 * This is the entry point for the whole per-item obtained/quantity
+	 * capture -- see collectionLogItemCapture's own class doc for why
+	 * this can't just be read passively the way structure
+	 * (CollectionLogSchemaExporter) can. */
+	@Subscribe
+	public void onScriptPostFired(ScriptPostFired event)
+	{
+		collectionLogItemCapture.onCollectionLogOpened(event.getScriptId(), client);
+	}
+
+	/** Fires once per obtained collection log item, as a result of
+	 * onScriptPostFired's own triggered refresh above -- see
+	 * collectionLogItemCapture's own onScriptPreFired doc for the
+	 * script id/argument shape. */
+	@Subscribe
+	public void onScriptPreFired(ScriptPreFired event)
+	{
+		collectionLogItemCapture.onScriptPreFired(
+			event.getScriptId(), event.getScriptEvent().getArguments(), client);
 	}
 
 	/** Fires once per skill the instant its xp, real level, or boosted
@@ -2529,12 +2580,27 @@ public class MyscapePlugin extends Plugin
 				patchCombatAchievementStats();
 			}
 
-			// Same deal, for the collection log (see collectionsDirty's
-			// field doc).
+			// Same deal, for the collection log's own completed/total
+			// counts (see collectionsDirty's field doc) -- distinct
+			// from collectionLogItemCapture just below, which is the
+			// per-item obtained/quantity state, not this pair of sums.
 			if (collectionsDirty)
 			{
 				collectionsDirty = false;
 				patchCollectionStats();
+			}
+
+			// Unlike every dirty flag above, a collection log item
+			// capture pass doesn't complete on a single event -- the
+			// client dribbles out one script firing per obtained item
+			// with no explicit "that's all of them" signal, so this is
+			// collectionLogItemCapture deciding, tick by tick, that no
+			// new item has arrived in a couple of ticks and the pass
+			// already in flight (if any -- most ticks there isn't one)
+			// is therefore finished. See its own onGameTick doc.
+			if (collectionLogItemCapture.onGameTick(client))
+			{
+				latestCollectionLogItems = collectionLogItemCapture.snapshotCapturedItems();
 			}
 
 			// Same deal, for the Master Scroll Book (see
