@@ -439,12 +439,12 @@ class MyscapePanel extends PluginPanel
 		// the same idea but as a real button (matching unlinkButton's
 		// own look) rather than a clickable label, so it reads clearly
 		// as something to press rather than plain text.
-		JButton statusToggle = new JButton("SHOW STATUS");
+		JButton statusToggle = new JButton("SHOW SYNC STATUS");
 		statusToggle.addActionListener(event ->
 		{
 			boolean nowVisible = !statusTable.isVisible();
 			statusTable.setVisible(nowVisible);
-			statusToggle.setText(nowVisible ? "HIDE STATUS" : "SHOW STATUS");
+			statusToggle.setText(nowVisible ? "HIDE SYNC STATUS" : "SHOW SYNC STATUS");
 			// GridBagLayout (like BoxLayout) skips an invisible
 			// component's preferred size entirely, so hiding the
 			// table also closes up the gap it left behind -- this
