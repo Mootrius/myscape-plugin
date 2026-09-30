@@ -1,8 +1,16 @@
 package io.myscape.plugin;
 
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
 import com.google.inject.Provides;
+import io.myscape.plugin.collectionlog.CollectionLogSchema;
+import io.myscape.plugin.collectionlog.CollectionLogSchemaExporter;
 import io.myscape.plugin.modelexport.ModelExporter;
 import java.awt.image.BufferedImage;
+import java.io.File;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -51,6 +59,7 @@ import net.runelite.api.widgets.Widget;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
+import net.runelite.client.RuneLite;
 import net.runelite.client.events.ConfigChanged;
 import net.runelite.client.game.ItemManager;
 import net.runelite.client.game.ItemStack;
@@ -2778,6 +2787,51 @@ public class MyscapePlugin extends Plugin
 			{
 				log.warn("Failed to capture character model", e);
 				callback.onFailure("Something went wrong capturing your character model.");
+			}
+		});
+	}
+
+	/** Fired once an export attempt from exportCollectionLogSchema below
+	 * finishes, always on the client thread -- see ModelCaptureCallback's
+	 * own doc above for why that split is left to the caller. */
+	interface CollectionLogSchemaExportCallback
+	{
+		void onSuccess(File file);
+
+		void onFailure(String message);
+	}
+
+	/** TEMPORARY: a one-time internal export, not a player-facing
+	 * feature. Wired to a button on MyscapePanel purely so a real,
+	 * logged-in client can produce the collection log's tab/page/item
+	 * structure (see CollectionLogSchemaExporter's own doc for why this
+	 * is read from the client rather than hand-compiled) as a JSON file
+	 * on disk, to be baked into the myscape backend as a static
+	 * resource. Delete this method, its callback interface above, and
+	 * the matching button/handler in MyscapePanel once that JSON has
+	 * been captured and copied over -- nothing downstream depends on
+	 * this running again on an ordinary player's machine. */
+	void exportCollectionLogSchema(CollectionLogSchemaExportCallback callback)
+	{
+		clientThread.invoke(() ->
+		{
+			try
+			{
+				CollectionLogSchema schema = CollectionLogSchemaExporter.export(client);
+				Gson gson = new GsonBuilder().setPrettyPrinting().create();
+				String json = gson.toJson(schema);
+
+				File directory = new File(RuneLite.RUNELITE_DIR, "myscape");
+				directory.mkdirs();
+				File file = new File(directory, "collection-log-schema.json");
+				Files.write(file.toPath(), json.getBytes(StandardCharsets.UTF_8));
+
+				callback.onSuccess(file);
+			}
+			catch (IOException | RuntimeException e)
+			{
+				log.warn("Failed to export collection log schema", e);
+				callback.onFailure("Something went wrong exporting the collection log schema.");
 			}
 		});
 	}

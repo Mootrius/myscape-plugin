@@ -11,6 +11,7 @@ import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
 import java.awt.Insets;
 import java.awt.event.ActionEvent;
+import java.io.File;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -126,6 +127,14 @@ class MyscapePanel extends PluginPanel
 	// just for the success case.
 	private final JButton exportModelButton = new JButton("Export 3D model");
 	private final JLabel exportModelStatusLabel = new JLabel();
+
+	// TEMPORARY -- see MyscapePlugin#exportCollectionLogSchema's own
+	// doc. A one-time internal export button, not a player-facing
+	// feature; delete this pair alongside that method and
+	// onExportCollectionLogSchemaClicked once the JSON it produces has
+	// been captured and baked into the myscape backend.
+	private final JButton exportCollectionLogSchemaButton = new JButton("Export collection log schema (temp)");
+	private final JLabel exportCollectionLogSchemaStatusLabel = new JLabel();
 
 	// The Status section's own per-storage status-value cells (see
 	// buildStatusTable) and the synced/not-synced state currently drawn
@@ -430,6 +439,27 @@ class MyscapePanel extends PluginPanel
 		exportStatusConstraints.insets = new Insets(6, 0, 0, 0);
 		panel.add(exportModelStatusLabel, exportStatusConstraints);
 
+		// TEMPORARY -- see exportCollectionLogSchemaButton's own field
+		// doc above.
+		exportCollectionLogSchemaButton.addActionListener(this::onExportCollectionLogSchemaClicked);
+		GridBagConstraints exportClogButtonConstraints = new GridBagConstraints();
+		exportClogButtonConstraints.gridx = 0;
+		exportClogButtonConstraints.gridy = 5;
+		exportClogButtonConstraints.anchor = GridBagConstraints.CENTER;
+		exportClogButtonConstraints.weightx = 1.0;
+		exportClogButtonConstraints.insets = new Insets(14, 0, 0, 0);
+		panel.add(exportCollectionLogSchemaButton, exportClogButtonConstraints);
+
+		exportCollectionLogSchemaStatusLabel.setVisible(false);
+		GridBagConstraints exportClogStatusConstraints = new GridBagConstraints();
+		exportClogStatusConstraints.gridx = 0;
+		exportClogStatusConstraints.gridy = 6;
+		exportClogStatusConstraints.anchor = GridBagConstraints.WEST;
+		exportClogStatusConstraints.fill = GridBagConstraints.HORIZONTAL;
+		exportClogStatusConstraints.weightx = 1.0;
+		exportClogStatusConstraints.insets = new Insets(6, 0, 0, 0);
+		panel.add(exportCollectionLogSchemaStatusLabel, exportClogStatusConstraints);
+
 		JPanel statusTable = buildStatusTable();
 		// Collapsed by default -- often a dozen-plus rows, mostly just
 		// confirming everything's already Synced, so it starts tucked
@@ -732,6 +762,44 @@ class MyscapePanel extends PluginPanel
 					exportModelStatusLabel.setForeground(ColorScheme.PROGRESS_ERROR_COLOR);
 					exportModelStatusLabel.setText("<html>" + escape(message) + "</html>");
 					exportModelStatusLabel.setVisible(true);
+				});
+			}
+		});
+	}
+
+	/** TEMPORARY -- see exportCollectionLogSchemaButton's own field
+	 * doc above. Mirrors onExportModelClicked's own shape (disable,
+	 * clear status, hop back to the EDT for every branch since the
+	 * plugin's callback fires on the client thread) but writes a local
+	 * file instead of uploading anywhere -- this is a one-time export
+	 * for baking into the backend as static data, not a per-player
+	 * sync. */
+	private void onExportCollectionLogSchemaClicked(ActionEvent event)
+	{
+		exportCollectionLogSchemaButton.setEnabled(false);
+		exportCollectionLogSchemaStatusLabel.setVisible(false);
+
+		plugin.exportCollectionLogSchema(new MyscapePlugin.CollectionLogSchemaExportCallback()
+		{
+			@Override
+			public void onSuccess(File file)
+			{
+				SwingUtilities.invokeLater(() -> {
+					exportCollectionLogSchemaButton.setEnabled(true);
+					exportCollectionLogSchemaStatusLabel.setForeground(ColorScheme.PROGRESS_COMPLETE_COLOR);
+					exportCollectionLogSchemaStatusLabel.setText("<html>Wrote " + escape(file.getAbsolutePath()) + "</html>");
+					exportCollectionLogSchemaStatusLabel.setVisible(true);
+				});
+			}
+
+			@Override
+			public void onFailure(String message)
+			{
+				SwingUtilities.invokeLater(() -> {
+					exportCollectionLogSchemaButton.setEnabled(true);
+					exportCollectionLogSchemaStatusLabel.setForeground(ColorScheme.PROGRESS_ERROR_COLOR);
+					exportCollectionLogSchemaStatusLabel.setText("<html>" + escape(message) + "</html>");
+					exportCollectionLogSchemaStatusLabel.setVisible(true);
 				});
 			}
 		});
