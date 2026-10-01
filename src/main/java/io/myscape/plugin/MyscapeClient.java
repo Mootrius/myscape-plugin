@@ -506,6 +506,20 @@ class MyscapeClient
 		// game content the server already knows, not something synced
 		// live from here.
 		final int[] combatTaskTierCompleted;
+		// One of "MAIN"/"IRONMAN"/"UIM"/"HCIM"/"GIM"/"HCGIM"/"UGIM" --
+		// see MyscapePlugin#readAccountType for where this actually
+		// comes from (client.getVarbitValue(Varbits.ACCOUNT_TYPE), not
+		// this panel at all) and GameAccount.account_type's own comment
+		// in the Mootrius/myscape repo's app/models.py for what it's
+		// used for server-side. A String (not one of the primitive
+		// fields above) since, unlike those, this one has a real
+		// "unknown" state worth preserving as null rather than
+		// defaulting to a specific value -- readAccountType itself
+		// never actually returns null, though (it falls back to
+		// "MAIN"), so in practice this is only ever null if some
+		// future caller builds a CharacterSummaryItem without reading
+		// it at all.
+		final String accountType;
 
 		CharacterSummaryItem(
 			double combatLevel, int totalLevel, long totalXp,
@@ -513,7 +527,8 @@ class MyscapeClient
 			int achievementsCompleted, int achievementsTotal,
 			int combatTasksCompleted, int combatTasksTotal,
 			int collectionsCompleted, int collectionsTotal,
-			int[] combatTaskTierCompleted)
+			int[] combatTaskTierCompleted,
+			String accountType)
 		{
 			this.combatLevel = combatLevel;
 			this.totalLevel = totalLevel;
@@ -527,6 +542,7 @@ class MyscapeClient
 			this.collectionsCompleted = collectionsCompleted;
 			this.collectionsTotal = collectionsTotal;
 			this.combatTaskTierCompleted = combatTaskTierCompleted;
+			this.accountType = accountType;
 		}
 	}
 
@@ -1257,6 +1273,13 @@ class MyscapeClient
 			tierJson.addProperty(tierNames[i], summary.combatTaskTierCompleted[i]);
 		}
 		body.add("combat_task_tier_completed", tierJson);
+		// Nullable (see CharacterSummaryItem.accountType's own doc
+		// above) -- Gson's addProperty(String, String) already handles
+		// a null value correctly (serializes it as a JSON null), which
+		// is exactly what the server's own Optional[str] = None field
+		// expects from an older build that predates this one, so no
+		// extra null check is needed here.
+		body.addProperty("account_type", summary.accountType);
 		syncPayload("/api/players/me/character-summary", body, "stat_count", callback);
 	}
 

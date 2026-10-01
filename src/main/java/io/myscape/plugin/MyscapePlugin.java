@@ -36,6 +36,7 @@ import net.runelite.api.Quest;
 import net.runelite.api.QuestState;
 import net.runelite.api.Skill;
 import net.runelite.api.TextureProvider;
+import net.runelite.api.Varbits;
 import net.runelite.api.events.ChatMessage;
 import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.GameTick;
@@ -2121,7 +2122,43 @@ public class MyscapePlugin extends Plugin
 			// moments later off the same onGameTick pass, see
 			// combatAchievementsDirty's own doc) to fill in for real,
 			// same as this field's own doc describes.
-			new int[COMBAT_ACHIEVEMENT_COMPLETED_VARBITS.length]);
+			new int[COMBAT_ACHIEVEMENT_COMPLETED_VARBITS.length],
+			// Unlike every field above, this one has nothing to do with
+			// the Character Summary panel at all -- it's a straight
+			// varbit read, always available once the client itself is
+			// logged in, so there's no reason to leave it for a later
+			// patch* call the way combat achievement tiers above are.
+			readAccountType());
+	}
+
+	/** client.getVarbitValue(Varbits.ACCOUNT_TYPE) (0-6) mapped to the
+	 * seven account type codes the Mootrius/myscape server expects (see
+	 * GameAccount.account_type's own comment in that repo's app/models.py)
+	 * -- straight off Varbits.ACCOUNT_TYPE's own javadoc in runelite-api,
+	 * NOT the deprecated Client#getAccountType()/AccountType enum, which
+	 * only has 6 values and can't tell an unranked group ironman apart
+	 * from a normal account at all (see runelite/runelite#16510). Falls
+	 * back to "MAIN" for any value this enum doesn't recognize, same as
+	 * every account not otherwise marked is just a normal account. */
+	private String readAccountType()
+	{
+		switch (client.getVarbitValue(Varbits.ACCOUNT_TYPE))
+		{
+			case 1:
+				return "IRONMAN";
+			case 2:
+				return "UIM";
+			case 3:
+				return "HCIM";
+			case 4:
+				return "GIM";
+			case 5:
+				return "HCGIM";
+			case 6:
+				return "UGIM";
+			default:
+				return "MAIN";
+		}
 	}
 
 	/** children[index], or null if index is out of bounds -- guards
@@ -2305,7 +2342,8 @@ public class MyscapePlugin extends Plugin
 			prev.achievementsCompleted, prev.achievementsTotal,
 			prev.combatTasksCompleted, prev.combatTasksTotal,
 			prev.collectionsCompleted, prev.collectionsTotal,
-			prev.combatTaskTierCompleted));
+			prev.combatTaskTierCompleted,
+			prev.accountType));
 	}
 
 	/** Patches questsCompleted/questsTotal onto latestCharacterSummary
@@ -2329,7 +2367,8 @@ public class MyscapePlugin extends Plugin
 			prev.achievementsCompleted, prev.achievementsTotal,
 			prev.combatTasksCompleted, prev.combatTasksTotal,
 			prev.collectionsCompleted, prev.collectionsTotal,
-			prev.combatTaskTierCompleted));
+			prev.combatTaskTierCompleted,
+			prev.accountType));
 	}
 
 	/** Patches achievementsCompleted/achievementsTotal onto
@@ -2375,7 +2414,8 @@ public class MyscapePlugin extends Plugin
 			finalCompleted, total,
 			prev.combatTasksCompleted, prev.combatTasksTotal,
 			prev.collectionsCompleted, prev.collectionsTotal,
-			prev.combatTaskTierCompleted));
+			prev.combatTaskTierCompleted,
+			prev.accountType));
 	}
 
 	/** Patches combatTasksCompleted onto latestCharacterSummary by
@@ -2407,7 +2447,8 @@ public class MyscapePlugin extends Plugin
 			prev.achievementsCompleted, prev.achievementsTotal,
 			finalCompleted, prev.combatTasksTotal,
 			prev.collectionsCompleted, prev.collectionsTotal,
-			finalTierCompleted));
+			finalTierCompleted,
+			prev.accountType));
 	}
 
 	/** Patches collectionsCompleted/collectionsTotal onto
@@ -2438,7 +2479,8 @@ public class MyscapePlugin extends Plugin
 			prev.achievementsCompleted, prev.achievementsTotal,
 			prev.combatTasksCompleted, prev.combatTasksTotal,
 			completed, total,
-			prev.combatTaskTierCompleted));
+			prev.combatTaskTierCompleted,
+			prev.accountType));
 	}
 
 	/** Whether varbitId is one of the 12 Rune Pouch type/quantity slot
