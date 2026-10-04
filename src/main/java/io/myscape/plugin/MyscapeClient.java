@@ -626,23 +626,6 @@ class MyscapeClient
 		void onFailure(String message);
 	}
 
-	/** Backs the side panel's Status section (see MyscapePanel's Status
-	 * card and fetchSyncStatus below) -- storages is keyed by the same
-	 * storage keys the server's own POSSESSION_STORAGE_KEYS uses ("bank",
-	 * "equipment", "inventory", "potion_storage", "rune_pouch",
-	 * "seed_vault", "looting_bag", "tackle_box", "poh", "forestry_kit",
-	 * "master_scroll_book", "seed_box"), each value either an ISO-8601
-	 * instant (that storage has synced at least once) or null (it never
-	 * has -- see Player.storage_synced_at's own docstring server-side
-	 * for why that's a real, distinct state worth showing rather than
-	 * just inferring it from whether an item list happens to be
-	 * empty). */
-	interface SyncStatusCallback
-	{
-		void onSuccess(Map<String, String> storages);
-		void onFailure(String message);
-	}
-
 	/** Exchanges a short-lived link code (pasted from the website) for a
 	 * long-lived API key, and stores that key -- never shown again after
 	 * this -- plus the player id it belongs to, via ConfigManager. */
@@ -1070,76 +1053,6 @@ class MyscapeClient
 		syncItems("/api/players/me/boat-cargo/" + slot, itemsJson, callback);
 	}
 
-	/** Polls GET /api/players/me/sync-status (see app/main.py in the
-	 * Mootrius/myscape repo) -- what the side panel's Status section
-	 * actually shows (see MyscapePanel's Status card). Deliberately its
-	 * own request rather than folded into refreshLinkStatus above: link
-	 * status is checked on a slow, fixed poll from plugin startup, while
-	 * the Status section also needs to reflect this session's own syncs
-	 * the moment they land, and mixing the two would mean either polling
-	 * link status far more often than it needs (wasteful) or the Status
-	 * section lagging behind syncs that just happened (misleading). */
-	void fetchSyncStatus(SyncStatusCallback callback)
-	{
-		String apiKey = configManager.getConfiguration(MyscapeConfig.GROUP, MyscapeConfig.API_KEY_KEY);
-		if (apiKey == null || apiKey.isEmpty())
-		{
-			callback.onFailure("Not linked.");
-			return;
-		}
-
-		Request request = new Request.Builder()
-			.url(apiUrl("/api/players/me/sync-status"))
-			.header("Authorization", "Bearer " + apiKey)
-			.get()
-			.build();
-
-		httpClient.newCall(request).enqueue(new Callback()
-		{
-			@Override
-			public void onFailure(Call call, IOException e)
-			{
-				callback.onFailure("Could not reach myscape.io.");
-			}
-
-			@Override
-			public void onResponse(Call call, Response response)
-			{
-				try (Response r = response)
-				{
-					if (r.code() == 401)
-					{
-						clearStoredLink();
-						callback.onFailure("No longer linked to myscape.io.");
-						return;
-					}
-					String responseBody = r.body() != null ? r.body().string() : "";
-					if (!r.isSuccessful())
-					{
-						callback.onFailure(describeError(r.code(), responseBody));
-						return;
-					}
-					JsonObject json = GSON.fromJson(responseBody, JsonObject.class);
-					JsonObject storagesJson = json.getAsJsonObject("storages");
-					Map<String, String> storages = new LinkedHashMap<>();
-					if (storagesJson != null)
-					{
-						for (Map.Entry<String, JsonElement> entry : storagesJson.entrySet())
-						{
-							JsonElement value = entry.getValue();
-							storages.put(entry.getKey(), value.isJsonNull() ? null : value.getAsString());
-						}
-					}
-					callback.onSuccess(storages);
-				}
-				catch (Exception e)
-				{
-					callback.onFailure("Unexpected response from myscape.io.");
-				}
-			}
-		});
-	}
-
 	/** Sends the player's current level+xp in every skill the plugin has
 	 * read at least once this session (POST /api/players/me/skills --
 	 * see app/main.py in the Mootrius/myscape repo). Always a full
@@ -1430,6 +1343,22 @@ class MyscapeClient
 		body.add("updates", updatesJson);
 
 		syncPayload("/api/players/me/kill-counts", body, "applied_count", callback);
+	}
+
+	/** Marks ONE collection log item obtained, by the name the game
+	 * itself printed in its "New item added to your collection log:
+	 * <name>" chat line -- see MyscapePlugin#onChatMessage. The server
+	 * resolves the name to the log's own item id (and silently ignores
+	 * one it can't resolve unambiguously -- the next full in-game
+	 * collection log capture picks it up instead), then ADDS it to what
+	 * it already has rather than replacing anything. callback's int is
+	 * applied_count (0 or 1) -- SyncCallback is reused purely because
+	 * the shape matches, same as syncKillCountUpdate above. */
+	void syncCollectionLogItemAdded(String itemName, SyncCallback callback)
+	{
+		JsonObject body = new JsonObject();
+		body.addProperty("item_name", itemName);
+		syncPayload("/api/players/me/collection-log/item", body, "applied_count", callback);
 	}
 
 	/** Shared by every "current state" container sync above (syncBank,

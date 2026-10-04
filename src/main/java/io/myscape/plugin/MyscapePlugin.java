@@ -64,6 +64,7 @@ import net.runelite.client.plugins.loottracker.LootReceived;
 import net.runelite.client.ui.ClientToolbar;
 import net.runelite.client.ui.NavigationButton;
 import net.runelite.client.util.ImageUtil;
+import net.runelite.client.util.Text;
 import okhttp3.OkHttpClient;
 
 /**
@@ -130,18 +131,6 @@ public class MyscapePlugin extends Plugin
 
 	@Inject
 	private ItemManager itemManager;
-
-	// The website no longer has its own "Unlink" button (that action now
-	// lives only in this plugin's sidebar), so there's no longer a way
-	// for this client to be unlinked without being told directly, and
-	// the periodic re-check that used to watch for exactly that is gone
-	// too (see startUp() below). What's left of this poll is purely
-	// cosmetic freshness: it keeps the Status section's per-storage rows
-	// honest even for a storage nothing in this session has triggered a
-	// resync of (see MyscapePanel#refreshSyncStatusInBackground), on a
-	// cadence loose enough to stay cheap for every connected client
-	// regardless of whether anyone's even looking at the panel.
-	private static final int SYNC_STATUS_POLL_SECONDS = 30;
 
 	// A container's ItemContainer fires a change event for every single
 	// deposit/withdraw/equip, not just once the player's done -- syncing
@@ -444,7 +433,6 @@ public class MyscapePlugin extends Plugin
 
 	private MyscapePanel panel;
 	private NavigationButton navButton;
-	private ScheduledFuture<?> syncStatusPollTask;
 	private ScheduledFuture<?> syncDebounceTask;
 
 	// When the current debounce burst started (see scheduleSyncDebounced
@@ -761,29 +749,11 @@ public class MyscapePlugin extends Plugin
 		}
 
 		panel.refreshLinkStatus();
-
-		syncStatusPollTask = executor.scheduleWithFixedDelay(
-			() -> {
-				if (panel != null)
-				{
-					// Keeps the Status section's per-storage rows honest
-					// even for a storage nothing in this session has
-					// triggered a resync of (see
-					// MyscapePanel#refreshSyncStatusInBackground).
-					panel.refreshSyncStatusInBackground();
-				}
-			},
-			SYNC_STATUS_POLL_SECONDS, SYNC_STATUS_POLL_SECONDS, TimeUnit.SECONDS);
 	}
 
 	@Override
 	protected void shutDown()
 	{
-		if (syncStatusPollTask != null)
-		{
-			syncStatusPollTask.cancel(false);
-			syncStatusPollTask = null;
-		}
 		if (syncDebounceTask != null)
 		{
 			syncDebounceTask.cancel(false);
@@ -1679,6 +1649,12 @@ public class MyscapePlugin extends Plugin
 	 * CHAT_NAME_OVERRIDES in app/bosses.py in the Mootrius/myscape
 	 * repo -- so this plugin stays free of its own copy of that table
 	 * to keep in sync as RuneLite adds bosses. */
+	// The game's own line when a collection log slot unlocks (shown when
+	// the in-game "collection log new addition notification" is on).
+	// Matched against the message with its color tags already stripped.
+	private static final Pattern COLLECTION_LOG_ITEM_PATTERN =
+		Pattern.compile("New item added to your collection log:\\s*(.+)");
+
 	/** Matches the chatbox line the game itself prints the instant a
 	 * Treasure Trail is completed ("You have completed 15 hard Treasure
 	 * Trails."), used to detect a clue casket's tier (see
@@ -1735,6 +1711,25 @@ public class MyscapePlugin extends Plugin
 
 		if (event.getType() != ChatMessageType.GAMEMESSAGE && event.getType() != ChatMessageType.SPAM)
 		{
+			return;
+		}
+
+		// A new collection log slot just unlocked: the full per-item
+		// capture only runs when the player opens the in-game log, so
+		// send this one item by name right away (the server adds it to
+		// what it already has). latestCollectionLogItems is dropped so
+		// the debounced sync can't later re-send a full list captured
+		// BEFORE this item and overwrite the addition -- the next real
+		// capture (opening the log) sets it again.
+		Matcher collectionLogMatcher = COLLECTION_LOG_ITEM_PATTERN.matcher(Text.removeTags(event.getMessage()));
+		if (collectionLogMatcher.find())
+		{
+			String itemName = collectionLogMatcher.group(1).trim();
+			if (!itemName.isEmpty())
+			{
+				latestCollectionLogItems = null;
+				panel.syncCollectionLogItemInBackground(itemName);
+			}
 			return;
 		}
 
@@ -2938,7 +2933,7 @@ public class MyscapePlugin extends Plugin
 	 * composited by the game engine exactly as
 	 * {@code Renderable#getModel()} hands it to the client's own
 	 * renderer -- as a standalone .glb file, for MyscapePanel's
-	 * "UPDATE PLAYER MODEL" button (see MyscapeClient#syncCharacterModel
+	 * "UPDATE CHARACTER MODEL" button (see MyscapeClient#syncCharacterModel
 	 * for what happens to the bytes next). See package
 	 * io.myscape.plugin.modelexport's own docs (ModelExporter,
 	 * ModelMeshBuilder, GlbWriter) for the actual conversion.

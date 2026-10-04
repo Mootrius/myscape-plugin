@@ -11,10 +11,7 @@ import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
 import java.awt.Insets;
 import java.awt.event.ActionEvent;
-import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import javax.swing.BorderFactory;
 import javax.swing.BoxLayout;
 import javax.swing.ImageIcon;
@@ -34,14 +31,9 @@ import net.runelite.client.util.LinkBrowser;
  * (app/models.py / app/routers/linking.py): the player pastes the
  * short-lived code shown by the "Generate code" banner on myscape.io in
  * here, and this exchanges it for a long-lived API key that
- * MyscapeClient stores and reuses for every future request. Also shows
- * a dedicated Status section, as a Synced/Syncing/Unsynced table,
- * listing every storage this plugin can sync (bank, equipment,
- * inventory, potion storage, seed vault, rune pouch, looting bag) and
- * whether each one is currently synced to the website (see
- * refreshSyncStatusInBackground/renderStatusRow below) -- the website's
- * own Storages Viewer feature reads exactly these storages, so
- * this is what tells a player whether it has everything it needs yet.
+ * MyscapeClient stores and reuses for every future request. Syncing
+ * itself happens silently in the background (see syncInBackground) --
+ * the sidebar deliberately shows no per-storage sync status.
  *
  * Four states, one per CardLayout card: checking the stored key against
  * the server on startup, not logged into the game yet (nothing to link
@@ -60,47 +52,6 @@ class MyscapePanel extends PluginPanel
 	// exactly rather than drifting from it over time.
 	private static final Color MYSCAPE_GOLD = new Color(0xff981f);
 
-	// The storages the Status section lists, alphabetized by their
-	// display label (STATUS_STORAGE_LABELS below) rather than mirroring
-	// POSSESSION_STORAGE_KEYS's server-side order (see SyncStatusOut's
-	// docstring in the Mootrius/myscape repo's app/schemas.py) --
-	// doesn't matter for correctness either way, since
-	// GET /api/players/me/sync-status (fetchSyncStatus below) reports
-	// back keyed by name rather than position, so this is purely about
-	// what's easiest for a player scanning the table to find a
-	// particular storage in. More storages will likely join this list
-	// later -- nothing here assumes exactly fourteen, just keep it
-	// alphabetized by label when one does. Boat Cargo shares this one
-	// "boat_cargo" key across all five boat slots (see BoatCargoItem's
-	// own comment in MyscapeClient.java for why), the same simplification
-	// PoH's own single "poh" key already makes across its six pieces of
-	// furniture.
-	private static final String[] STATUS_STORAGE_KEYS = {
-		"bank", "boat_cargo", "equipment", "forestry_kit", "huntsmans_kit", "inventory",
-		"looting_bag", "master_scroll_book", "poh", "potion_storage", "rune_pouch",
-		"seed_box", "seed_vault", "tackle_box",
-	};
-	private static final Map<String, String> STATUS_STORAGE_LABELS = buildStatusStorageLabels();
-
-	private static Map<String, String> buildStatusStorageLabels()
-	{
-		Map<String, String> labels = new LinkedHashMap<>();
-		labels.put("bank", "Bank");
-		labels.put("boat_cargo", "Boat cargo");
-		labels.put("equipment", "Equipment");
-		labels.put("inventory", "Inventory");
-		labels.put("potion_storage", "Potion storage");
-		labels.put("seed_vault", "Seed vault");
-		labels.put("rune_pouch", "Rune pouch");
-		labels.put("looting_bag", "Looting bag");
-		labels.put("tackle_box", "Tackle box");
-		labels.put("poh", "PoH");
-		labels.put("forestry_kit", "Forestry kit");
-		labels.put("huntsmans_kit", "Huntsman's kit");
-		labels.put("master_scroll_book", "Master scroll book");
-		labels.put("seed_box", "Seed box");
-		return Collections.unmodifiableMap(labels);
-	}
 
 	private final MyscapeClient client;
 	private final MyscapePlugin plugin;
@@ -113,31 +64,17 @@ class MyscapePanel extends PluginPanel
 	private final JLabel linkErrorLabel = new JLabel();
 
 	private final JLabel linkedNameLabel = new JLabel();
-	private final JButton unlinkButton = new JButton("UNLINK");
+	private final JButton unlinkButton = new JButton("UNLINK CHARACTER");
 	private final JLabel unlinkErrorLabel = new JLabel();
 
-	// The "UPDATE PLAYER MODEL" button and its own error line, right
-	// below the Status section's toggle -- see buildLinkedCard() and
+	// The "UPDATE CHARACTER MODEL" button and its own error line -- see buildLinkedCard() and
 	// onExportModelClicked(). exportModelStatusLabel only ever shows
 	// the failure case (PROGRESS_ERROR_COLOR) -- a successful upload
 	// just re-enables the button and leaves this hidden, with no
 	// separate confirmation text.
-	private final JButton exportModelButton = new JButton("UPDATE PLAYER MODEL");
+	private final JButton exportModelButton = new JButton("UPDATE CHARACTER MODEL");
 	private final JLabel exportModelStatusLabel = new JLabel();
 
-	// The Status section's own per-storage status-value cells (see
-	// buildStatusTable) and the synced/not-synced state currently drawn
-	// into each -- Boolean rather than boolean so "not yet checked"
-	// (null, drawn as "Syncing") is a distinct third state from
-	// "checked, and it's genuinely never synced" (false, drawn as
-	// "Unsynced"). Populated by refreshSyncStatusInBackground below
-	// (the authoritative source, GET /api/players/me/sync-status) and
-	// updated optimistically the instant this session's own sync of
-	// that storage succeeds (see syncCallback), so the cell doesn't
-	// have to wait for the next poll to reflect a sync that just
-	// visibly happened.
-	private final Map<String, JLabel> statusValueLabels = new LinkedHashMap<>();
-	private final Map<String, Boolean> storageSynced = new LinkedHashMap<>();
 
 	private boolean showingLinked;
 
@@ -399,7 +336,7 @@ class MyscapePanel extends PluginPanel
 		errorConstraints.insets = new Insets(6, 0, 0, 0);
 		panel.add(unlinkErrorLabel, errorConstraints);
 
-		// "UPDATE PLAYER MODEL" -- captures the local player's current
+		// "UPDATE CHARACTER MODEL" -- captures the local player's current
 		// composited model (base skeleton + every equipped item + pose)
 		// via MyscapePlugin#captureCharacterModel and uploads it to
 		// myscape.io for Character Overview's 3D viewer (see
@@ -427,101 +364,10 @@ class MyscapePanel extends PluginPanel
 		exportStatusConstraints.insets = new Insets(6, 0, 0, 0);
 		panel.add(exportModelStatusLabel, exportStatusConstraints);
 
-		JPanel statusTable = buildStatusTable();
-		// Collapsed by default -- often a dozen-plus rows, mostly just
-		// confirming everything's already Synced, so it starts tucked
-		// away rather than pushing the rest of the card out of view on
-		// first render.
-		statusTable.setVisible(false);
-
-		// A plain "STATUS" label used to sit here uncontrolled (see
-		// commit 66d756b, which dropped it entirely) -- this brings back
-		// the same idea but as a real button (matching unlinkButton's
-		// own look) rather than a clickable label, so it reads clearly
-		// as something to press rather than plain text.
-		JButton statusToggle = new JButton("SHOW SYNC STATUS");
-		statusToggle.addActionListener(event ->
-		{
-			boolean nowVisible = !statusTable.isVisible();
-			statusTable.setVisible(nowVisible);
-			statusToggle.setText(nowVisible ? "HIDE SYNC STATUS" : "SHOW SYNC STATUS");
-			// GridBagLayout (like BoxLayout) skips an invisible
-			// component's preferred size entirely, so hiding the
-			// table also closes up the gap it left behind -- this
-			// just needs to be told to re-run that layout pass.
-			panel.revalidate();
-			panel.repaint();
-		});
-		GridBagConstraints toggleConstraints = new GridBagConstraints();
-		toggleConstraints.gridx = 0;
-		toggleConstraints.gridy = 5;
-		toggleConstraints.anchor = GridBagConstraints.CENTER;
-		toggleConstraints.weightx = 1.0;
-		toggleConstraints.insets = new Insets(14, 0, 4, 0);
-		panel.add(statusToggle, toggleConstraints);
-
-		GridBagConstraints tableConstraints = new GridBagConstraints();
-		tableConstraints.gridx = 0;
-		tableConstraints.gridy = 6;
-		tableConstraints.anchor = GridBagConstraints.WEST;
-		tableConstraints.fill = GridBagConstraints.HORIZONTAL;
-		tableConstraints.weightx = 1.0;
-		panel.add(statusTable, tableConstraints);
 
 		return panel;
 	}
 
-	/** Builds the Status section as a genuine two-column table --
-	 * storage name in the left column, colored Synced/Syncing/Unsynced
-	 * state in the right (see renderStatusRow) -- using GridBagLayout
-	 * rather than a JTable (too heavy and visually inconsistent with
-	 * RuneLite's minimal sidebar chrome for a dozen static rows) or a
-	 * plain GridLayout (would force both columns to the width of
-	 * whichever cell is widest across BOTH columns, wasting space next
-	 * to short names like "PoH"). Each column instead sizes to its own
-	 * widest cell, so names and states line up like a real table
-	 * without stretching either further than it needs to. Built once
-	 * here; only ever re-rendered in place afterward (see
-	 * renderStatusRow), never rebuilt. */
-	private JPanel buildStatusTable()
-	{
-		JPanel table = new JPanel(new GridBagLayout());
-
-		int row = 0;
-		for (String key : STATUS_STORAGE_KEYS)
-		{
-			GridBagConstraints nameConstraints = new GridBagConstraints();
-			nameConstraints.gridx = 0;
-			nameConstraints.gridy = row;
-			nameConstraints.anchor = GridBagConstraints.WEST;
-			nameConstraints.insets = new Insets(2, 0, 2, 12);
-			table.add(new JLabel(STATUS_STORAGE_LABELS.getOrDefault(key, key)), nameConstraints);
-
-			GridBagConstraints valueConstraints = new GridBagConstraints();
-			valueConstraints.gridx = 1;
-			valueConstraints.gridy = row;
-			valueConstraints.anchor = GridBagConstraints.WEST;
-			valueConstraints.insets = new Insets(2, 0, 2, 0);
-			// With every column's weightx left at the GridBagLayout
-			// default of 0, any leftover width in the table's actual
-			// (now full-card-width) container gets split as margin
-			// around the whole two-column grid, centering it -- each
-			// cell's own WEST anchor only positions content within its
-			// own cell, it doesn't stop the grid as a block from
-			// drifting off the left edge. Giving this trailing column
-			// all the weight routes that leftover space to its right
-			// instead, so the grid as a whole stays pinned to the left
-			// wall the way the name column's own WEST anchor implies.
-			valueConstraints.weightx = 1.0;
-			JLabel valueLabel = new JLabel();
-			statusValueLabels.put(key, valueLabel);
-			table.add(valueLabel, valueConstraints);
-
-			row++;
-		}
-
-		return table;
-	}
 
 	/** Called once on plugin startup -- re-checks the stored API key
 	 * against the server rather than trusting local state, since the key
@@ -586,18 +432,6 @@ class MyscapePanel extends PluginPanel
 		String name = runescapeName != null ? runescapeName : plugin.getRuneScapeName();
 		linkedNameLabel.setText("<html>Linked as <b>" + escape(name != null ? name : "your game account") + "</b></html>");
 		cards.show(cardPanel, CARD_LINKED);
-
-		// A fresh "Linked" screen (first link, or a re-check after
-		// re-opening the panel) means whatever the Status table last
-		// showed is stale too -- reset every row to "Syncing" and kick
-		// off an authoritative refresh rather than keep showing state
-		// left over from before (or from a different account).
-		storageSynced.clear();
-		for (String key : STATUS_STORAGE_KEYS)
-		{
-			renderStatusRow(key);
-		}
-		refreshSyncStatusInBackground();
 	}
 
 	private void onLinkClicked(ActionEvent event)
@@ -738,19 +572,11 @@ class MyscapePanel extends PluginPanel
 	 * have actually been observed this session (any
 	 * argument may be null; see the field docs on MyscapePlugin's
 	 * latest*Items/latestSkillItems/latestCompletedQuestNames/
-	 * latestInProgressQuestNames/latestDiaryTierItems/latestCharacterSummary fields) and, for each of the fourteen that
-	 * have a Status-table row (see STATUS_STORAGE_KEYS), marks that
-	 * row synced the instant the sync succeeds (see syncCallback). All
-	 * five boatCargoNItems arguments share the same "boat_cargo" status
-	 * key (see STATUS_STORAGE_KEYS' own comment for why) -- whichever
-	 * boat slot(s) actually synced this round still each mark that one
-	 * shared row. A
-	 * failure is handled the same quiet way the background
-	 * sync-status poll handles one (see
-	 * MyscapePanel#refreshSyncStatusInBackground) -- this runs
-	 * unprompted in the background, not from a button click, so it
-	 * shouldn't interrupt the player the way a failed explicit action
-	 * would; the next change just tries again. */
+	 * latestInProgressQuestNames/latestDiaryTierItems/latestCharacterSummary fields). A failure is
+	 * swallowed quietly (see syncCallback) -- this runs unprompted in the
+	 * background, not from a button click, so it shouldn't interrupt the
+	 * player the way a failed explicit action would; the next change just
+	 * tries again. */
 	void syncInBackground(
 		List<MyscapeClient.BankItem> bankItems,
 		List<MyscapeClient.InventoryItem> inventoryItems,
@@ -779,75 +605,75 @@ class MyscapePanel extends PluginPanel
 	{
 		if (bankItems != null)
 		{
-			client.syncBank(bankItems, syncCallback("bank"));
+			client.syncBank(bankItems, syncCallback());
 		}
 		if (inventoryItems != null)
 		{
-			client.syncInventory(inventoryItems, syncCallback("inventory"));
+			client.syncInventory(inventoryItems, syncCallback());
 		}
 		if (equipmentItems != null)
 		{
-			client.syncEquipment(equipmentItems, syncCallback("equipment"));
+			client.syncEquipment(equipmentItems, syncCallback());
 		}
 		if (potionStorageItems != null)
 		{
-			client.syncPotionStorage(potionStorageItems, syncCallback("potion_storage"));
+			client.syncPotionStorage(potionStorageItems, syncCallback());
 		}
 		if (runePouchItems != null)
 		{
-			client.syncRunePouch(runePouchItems, syncCallback("rune_pouch"));
+			client.syncRunePouch(runePouchItems, syncCallback());
 		}
 		if (lootingBagItems != null)
 		{
-			client.syncLootingBag(lootingBagItems, syncCallback("looting_bag"));
+			client.syncLootingBag(lootingBagItems, syncCallback());
 		}
 		if (seedVaultItems != null)
 		{
-			client.syncSeedVault(seedVaultItems, syncCallback("seed_vault"));
+			client.syncSeedVault(seedVaultItems, syncCallback());
 		}
 		if (tackleBoxItems != null)
 		{
-			client.syncTackleBox(tackleBoxItems, syncCallback("tackle_box"));
+			client.syncTackleBox(tackleBoxItems, syncCallback());
 		}
 		if (pohItems != null)
 		{
-			client.syncPoh(pohItems, syncCallback("poh"));
+			client.syncPoh(pohItems, syncCallback());
 		}
 		if (forestryKitItems != null)
 		{
-			client.syncForestryKit(forestryKitItems, syncCallback("forestry_kit"));
+			client.syncForestryKit(forestryKitItems, syncCallback());
 		}
 		if (seedBoxItems != null)
 		{
-			client.syncSeedBox(seedBoxItems, syncCallback("seed_box"));
+			client.syncSeedBox(seedBoxItems, syncCallback());
 		}
 		if (masterScrollBookItems != null)
 		{
-			client.syncMasterScrollBook(masterScrollBookItems, syncCallback("master_scroll_book"));
+			client.syncMasterScrollBook(masterScrollBookItems, syncCallback());
 		}
 		if (huntsmansKitItems != null)
 		{
-			client.syncHuntsmansKit(huntsmansKitItems, syncCallback("huntsmans_kit"));
+			client.syncHuntsmansKit(huntsmansKitItems, syncCallback());
 		}
 		if (boatCargo1Items != null)
 		{
-			client.syncBoatCargo(1, boatCargo1Items, syncCallback("boat_cargo"));
+			client.syncBoatCargo(1, boatCargo1Items, syncCallback());
 		}
 		if (boatCargo2Items != null)
 		{
-			client.syncBoatCargo(2, boatCargo2Items, syncCallback("boat_cargo"));
+			client.syncBoatCargo(2, boatCargo2Items, syncCallback());
 		}
 		if (boatCargo3Items != null)
 		{
-			client.syncBoatCargo(3, boatCargo3Items, syncCallback("boat_cargo"));
+			client.syncBoatCargo(3, boatCargo3Items, syncCallback());
 		}
 		if (boatCargo4Items != null)
 		{
-			client.syncBoatCargo(4, boatCargo4Items, syncCallback("boat_cargo"));
+			client.syncBoatCargo(4, boatCargo4Items, syncCallback());
 		}
 		if (boatCargo5Items != null)
 		{
-			client.syncBoatCargo(5, boatCargo5Items, syncCallback("boat_cargo"));
+			client.syncBoatCargo(5, boatCargo5Items, syncCallback());
 		}
 		if (skillItems != null)
 		{
@@ -878,8 +704,7 @@ class MyscapePanel extends PluginPanel
 	 * already happened, not a "current state" that benefits from
 	 * collapsing a burst of changes into one send (see LootEvent's
 	 * docstring in the Mootrius/myscape repo's app/models.py). Loot
-	 * events aren't part of the Status table (see STATUS_STORAGE_KEYS)
-	 * and have nothing else in the UI to update, so this just fires
+	 * events have nothing in the UI to update, so this just fires
 	 * the sync and otherwise stays quiet. */
 	void syncLootInBackground(MyscapeClient.LootEvent event)
 	{
@@ -906,8 +731,7 @@ class MyscapePanel extends PluginPanel
 	 * same as syncLootInBackground above and for the same reason: a
 	 * kill-count reading is a discrete, already-true fact the instant
 	 * the game announces it, not "current state" worth folding into
-	 * the shared debounce. Kill counts aren't part of the Status table
-	 * (see STATUS_STORAGE_KEYS) and have nothing else in the UI to
+	 * the shared debounce. Kill counts have nothing in the UI to
 	 * update, so this just fires the sync and otherwise stays
 	 * quiet. */
 	void syncKillCountInBackground(String bossName, int killCount)
@@ -931,10 +755,21 @@ class MyscapePanel extends PluginPanel
 		});
 	}
 
+	/** Sends one just-unlocked collection log item (by name) the moment
+	 * the game announces it -- see MyscapePlugin#onChatMessage and
+	 * MyscapeClient#syncCollectionLogItemAdded. A discrete, already-true
+	 * fact like a kill count, so it skips the shared debounce, and has
+	 * nothing in the UI to update, so a failure is simply dropped: the
+	 * next time the player opens the in-game collection log, the full
+	 * capture catches it up. */
+	void syncCollectionLogItemInBackground(String itemName)
+	{
+		client.syncCollectionLogItemAdded(itemName, syncCallback());
+	}
+
 	/** Builds a SyncCallback whose only remaining job is to swallow a
-	 * failure quietly (see the method doc below) -- used directly (no
-	 * storage key) by skills/quests/diaries, which aren't part of the
-	 * Status table; see the overload below for the fourteen that are. */
+	 * failure quietly (see the method doc below) -- used by
+	 * every background sync in syncInBackground. */
 	private MyscapeClient.SyncCallback syncCallback()
 	{
 		return new MyscapeClient.SyncCallback()
@@ -942,10 +777,7 @@ class MyscapePanel extends PluginPanel
 			@Override
 			public void onSuccess(int itemCount)
 			{
-				// Nothing to update -- skills/quests/diaries don't have a
-				// Status table row of their own, and the combined
-				// "Synced: N bank, ..." summary line this used to feed is
-				// gone (superseded by the Status table).
+				// Nothing to update -- the sidebar shows no sync status.
 			}
 
 			@Override
@@ -957,119 +789,6 @@ class MyscapePanel extends PluginPanel
 				// its own.
 			}
 		};
-	}
-
-	/** Same as the plain syncCallback above, plus marking storageKey
-	 * synced in the Status table the instant this sync succeeds --
-	 * used by the item-source syncs in syncInBackground, each of which
-	 * corresponds to one of the fourteen STATUS_STORAGE_KEYS (boat
-	 * cargo's five per-slot syncs all sharing that one "boat_cargo"
-	 * key). This is
-	 * deliberately optimistic (set the moment the response comes back,
-	 * not on the next poll of GET /api/players/me/sync-status) so the
-	 * row doesn't lag a sync that already succeeded --
-	 * refreshSyncStatusInBackground below will confirm the same thing
-	 * shortly anyway. */
-	private MyscapeClient.SyncCallback syncCallback(String storageKey)
-	{
-		return new MyscapeClient.SyncCallback()
-		{
-			@Override
-			public void onSuccess(int itemCount)
-			{
-				SwingUtilities.invokeLater(() -> {
-					storageSynced.put(storageKey, Boolean.TRUE);
-					renderStatusRow(storageKey);
-				});
-			}
-
-			@Override
-			public void onFailure(String message)
-			{
-				// Ignored -- see the method doc above.
-			}
-		};
-	}
-
-	/** Polls GET /api/players/me/sync-status (see MyscapeClient#fetchSyncStatus)
-	 * and refreshes every row in the Status section from the
-	 * authoritative server answer -- called once as soon as the panel
-	 * shows "Linked" (see showLinked) and again on MyscapePlugin's own
-	 * periodic background poll (see MyscapePlugin#startUp). A failure
-	 * (offline, not actually linked, ...) is ignored quietly -- this
-	 * runs unprompted, not from something the player clicked, so
-	 * nothing here should interrupt them; whatever the section last
-	 * showed just stays put until the next successful poll. */
-	void refreshSyncStatusInBackground()
-	{
-		if (!showingLinked)
-		{
-			return;
-		}
-		client.fetchSyncStatus(new MyscapeClient.SyncStatusCallback()
-		{
-			@Override
-			public void onSuccess(Map<String, String> storages)
-			{
-				SwingUtilities.invokeLater(() -> {
-					for (String key : STATUS_STORAGE_KEYS)
-					{
-						storageSynced.put(key, storages.get(key) != null);
-						renderStatusRow(key);
-					}
-				});
-			}
-
-			@Override
-			public void onFailure(String message)
-			{
-				// Ignored -- see the method doc above.
-			}
-		});
-	}
-
-	/** Redraws one Status table row from storageSynced's current view
-	 * of that key -- just the status-value cell (see buildStatusTable;
-	 * the storage's name lives in its own, separate, uncolored cell) --
-	 * in the site's own completed-progress green for "Synced" once
-	 * storageSynced.get(key) is true, its progress-error red for
-	 * "Unsynced" once it's known false (nothing alarming about that --
-	 * plenty of these, Seed Vault especially right now, simply haven't
-	 * been wired up to sync at all yet), or its in-progress orange for
-	 * "Syncing" for as long as it's still null (never fetched this
-	 * "Linked" session -- see showLinked). Deliberately plain text with
-	 * no dot/bullet glyph -- an earlier version used a Unicode circle
-	 * character for this, which showed up as a "tofu box" (garbled
-	 * placeholder glyph) for at least one player because RuneLite's own
-	 * bundled sidebar font doesn't cover it; color alone carries the
-	 * same information without depending on font glyph coverage at
-	 * all. */
-	private void renderStatusRow(String key)
-	{
-		JLabel value = statusValueLabels.get(key);
-		if (value == null)
-		{
-			return;
-		}
-		Boolean synced = storageSynced.get(key);
-		if (synced == null)
-		{
-			value.setText("<html><span style='color:" + toHex(ColorScheme.PROGRESS_INPROGRESS_COLOR) + ";'>Syncing</span></html>");
-			return;
-		}
-		if (synced)
-		{
-			value.setText("<html><span style='color:" + toHex(ColorScheme.PROGRESS_COMPLETE_COLOR) + ";'>Synced</span></html>");
-		}
-		else
-		{
-			value.setText("<html><span style='color:" + toHex(ColorScheme.PROGRESS_ERROR_COLOR) + ";'>Unsynced</span></html>");
-		}
-	}
-
-	private static String toHex(Color color)
-	{
-		return String.format("#%02x%02x%02x", color.getRed(), color.getGreen(), color.getBlue());
 	}
 
 	private static String escape(String s)
