@@ -1,6 +1,8 @@
 package io.myscape.plugin.collectionlog;
 
 import java.util.LinkedHashMap;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
@@ -84,6 +86,23 @@ public final class CollectionLogItemCapture
 	 * temporary diagnostic can show it. */
 	private final Set<Integer> zeroQuantityItemIds = new LinkedHashSet<>();
 
+	/** Ids the log's item script announces that are NOT the id the log's
+	 * own structure (see {@link CollectionLogSchemaExporter}) lists the
+	 * slot under, mapped back to that structure id. Found by comparing
+	 * a live capture against the structure: the Yama Dossier slot is
+	 * announced as 30805 (the Dossier's placeholder variant -- two above
+	 * its real id, the usual placeholder offset) while the structure,
+	 * and the website, know it as 30803, so it was silently never
+	 * matched. */
+	private static final Map<Integer, Integer> ANNOUNCED_ID_TO_STRUCTURE_ID = buildAnnouncedIdRemap();
+
+	private static Map<Integer, Integer> buildAnnouncedIdRemap()
+	{
+		Map<Integer, Integer> remap = new HashMap<>();
+		remap.put(30805, 30803); // Dossier (Yama)
+		return Collections.unmodifiableMap(remap);
+	}
+
 	/** Set the instant {@link #onCollectionLogOpened} triggers its own
 	 * search-toggle + init-script sequence, and cleared once {@link
 	 * #onGameTick} decides that sequence's transmissions have settled.
@@ -156,7 +175,7 @@ public final class CollectionLogItemCapture
 
 		lastItemScriptFiredTick = client.getTickCount();
 
-		int itemId = (int) scriptArgs[1];
+		int itemId = ANNOUNCED_ID_TO_STRUCTURE_ID.getOrDefault((int) scriptArgs[1], (int) scriptArgs[1]);
 		int quantity = (int) scriptArgs[2];
 		if (quantity < 1)
 		{
