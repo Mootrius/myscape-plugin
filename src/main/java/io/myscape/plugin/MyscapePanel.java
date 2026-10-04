@@ -7,11 +7,17 @@ import java.awt.CardLayout;
 import java.awt.Cursor;
 import java.awt.FlowLayout;
 import java.awt.Font;
+import java.awt.FontFormatException;
 import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
 import java.awt.Insets;
 import java.awt.event.ActionEvent;
+import java.awt.font.TextAttribute;
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import javax.swing.BorderFactory;
 import javax.swing.BoxLayout;
 import javax.swing.ImageIcon;
@@ -64,15 +70,15 @@ class MyscapePanel extends PluginPanel
 	private final JLabel linkErrorLabel = new JLabel();
 
 	private final JLabel linkedNameLabel = new JLabel();
-	private final JButton unlinkButton = new JButton("UNLINK CHARACTER");
+	private final JButton unlinkButton = new JButton("UNLINK");
 	private final JLabel unlinkErrorLabel = new JLabel();
 
-	// The "UPDATE CHARACTER MODEL" button and its own error line -- see buildLinkedCard() and
-	// onExportModelClicked(). exportModelStatusLabel only ever shows
+	// The "UPDATE MODEL" button and its own error line -- see
+	// buildLinkedCard() and onExportModelClicked(). exportModelStatusLabel only ever shows
 	// the failure case (PROGRESS_ERROR_COLOR) -- a successful upload
 	// just re-enables the button and leaves this hidden, with no
 	// separate confirmation text.
-	private final JButton exportModelButton = new JButton("UPDATE CHARACTER MODEL");
+	private final JButton exportModelButton = new JButton("UPDATE MODEL");
 	private final JLabel exportModelStatusLabel = new JLabel();
 
 
@@ -140,11 +146,45 @@ class MyscapePanel extends PluginPanel
 	private JLabel buildLogo()
 	{
 		JLabel logo = new JLabel("myscape");
-		logo.setFont(logo.getFont().deriveFont(Font.BOLD, 20f));
+		logo.setFont(wordmarkFont());
 		logo.setForeground(MYSCAPE_GOLD);
 		logo.setAlignmentX(Component.CENTER_ALIGNMENT);
 		logo.setHorizontalAlignment(SwingConstants.CENTER);
 		return logo;
+	}
+
+	/** The site's own font for its wordmark -- RuneScapePlain11, plain
+	 * weight, 28px, with 0.03em letter-spacing (see .logo in
+	 * app/static/css/myscape.css and the @font-face for it at the top of
+	 * that file). The same .otf the site serves is bundled next to this
+	 * class under src/main/resources so the plugin's copy matches it
+	 * exactly; if it can't be loaded for any reason this falls back to
+	 * the sidebar's default font at the same weight and size rather than
+	 * failing to build the panel. */
+	private static Font wordmarkFont()
+	{
+		Font base = null;
+		try (InputStream in = MyscapePanel.class.getResourceAsStream("RuneScapePlain11.otf"))
+		{
+			if (in != null)
+			{
+				base = Font.createFont(Font.TRUETYPE_FONT, in);
+			}
+		}
+		catch (FontFormatException | IOException e)
+		{
+			base = null;
+		}
+		if (base == null)
+		{
+			return new JLabel().getFont().deriveFont(Font.PLAIN, 28f);
+		}
+		Map<TextAttribute, Object> attributes = new HashMap<>();
+		attributes.put(TextAttribute.SIZE, 28f);
+		attributes.put(TextAttribute.WEIGHT, TextAttribute.WEIGHT_REGULAR);
+		// 0.03em letter-spacing, same as the site's .logo.
+		attributes.put(TextAttribute.TRACKING, 0.03f);
+		return base.deriveFont(attributes);
 	}
 
 	/** The small row of icon-only social links directly under the
@@ -336,7 +376,7 @@ class MyscapePanel extends PluginPanel
 		errorConstraints.insets = new Insets(6, 0, 0, 0);
 		panel.add(unlinkErrorLabel, errorConstraints);
 
-		// "UPDATE CHARACTER MODEL" -- captures the local player's current
+		// "UPDATE MODEL" -- captures the local player's current
 		// composited model (base skeleton + every equipped item + pose)
 		// via MyscapePlugin#captureCharacterModel and uploads it to
 		// myscape.io for Character Overview's 3D viewer (see
