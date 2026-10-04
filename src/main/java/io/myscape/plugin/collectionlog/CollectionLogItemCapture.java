@@ -1,7 +1,9 @@
 package io.myscape.plugin.collectionlog;
 
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Set;
 import net.runelite.api.Client;
 import net.runelite.api.MenuAction;
 import net.runelite.api.gameval.InterfaceID;
@@ -73,6 +75,14 @@ public final class CollectionLogItemCapture
 	 * same order the client sent them, not because anything here
 	 * depends on that order. */
 	private final Map<Integer, Integer> capturedItems = new LinkedHashMap<>();
+
+	/** Item ids the client announced with a quantity below 1. The
+	 * script only fires for items the log counts as obtained, so a
+	 * firing at all means "obtained" -- such an id is stored at
+	 * quantity 1 (the server drops anything under 1 as "not obtained",
+	 * which silently lost these) and also remembered here so the
+	 * temporary diagnostic can show it. */
+	private final Set<Integer> zeroQuantityItemIds = new LinkedHashSet<>();
 
 	/** Set the instant {@link #onCollectionLogOpened} triggers its own
 	 * search-toggle + init-script sequence, and cleared once {@link
@@ -148,7 +158,18 @@ public final class CollectionLogItemCapture
 
 		int itemId = (int) scriptArgs[1];
 		int quantity = (int) scriptArgs[2];
-		capturedItems.put(itemId, quantity);
+		if (quantity < 1)
+		{
+			zeroQuantityItemIds.add(itemId);
+		}
+		capturedItems.put(itemId, Math.max(1, quantity));
+	}
+
+	/** Ids announced with a quantity under 1 so far this session --
+	 * see {@link #zeroQuantityItemIds}. */
+	public Set<Integer> snapshotZeroQuantityItemIds()
+	{
+		return new LinkedHashSet<>(zeroQuantityItemIds);
 	}
 
 	/** Call from {@code MyscapePlugin}'s own {@code onVarbitChanged}

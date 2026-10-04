@@ -53,6 +53,8 @@ import net.runelite.api.gameval.VarbitID;
 import net.runelite.api.gameval.VarPlayerID;
 import net.runelite.api.widgets.Widget;
 import net.runelite.client.callback.ClientThread;
+import net.runelite.client.chat.ChatMessageManager;
+import net.runelite.client.chat.QueuedMessage;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.events.ConfigChanged;
@@ -131,6 +133,9 @@ public class MyscapePlugin extends Plugin
 
 	@Inject
 	private ItemManager itemManager;
+
+	@Inject
+	private ChatMessageManager chatMessageManager;
 
 	// A container's ItemContainer fires a change event for every single
 	// deposit/withdraw/equip, not just once the player's done -- syncing
@@ -1894,6 +1899,74 @@ public class MyscapePlugin extends Plugin
 		collectionLogItemCapture.onCollectionLogOpened(event.getScriptId(), client);
 	}
 
+	// TEMPORARY DIAGNOSTIC (collection log capture): the live in-game
+	// schema's id set, built lazily on first use, and the last message
+	// posted so the same line isn't repeated every capture pass.
+	private Set<Integer> liveCollectionLogSchemaIds;
+	private String lastCollectionLogDiagnostic;
+
+	/** TEMPORARY DIAGNOSTIC -- posts one chatbox line after a collection
+	 * log capture pass whenever something looks off: a captured item id
+	 * that isn't in the game's own live collection log structure (the
+	 * server only keeps ids it knows from that structure, so these were
+	 * being silently dropped), an item announced with quantity 0, or the
+	 * Yama Dossier (30803) not being captured at all -- which is exactly
+	 * what is being chased, and shows what the game actually reports for
+	 * it. Silent when nothing is off. Remove once the Dossier question
+	 * is settled. Runs on the client thread (called from onGameTick). */
+	private void reportCollectionLogDiagnostic()
+	{
+		try
+		{
+			if (liveCollectionLogSchemaIds == null)
+			{
+				Set<Integer> ids = new HashSet<>();
+				for (io.myscape.plugin.collectionlog.CollectionLogSchema.Tab tab
+					: io.myscape.plugin.collectionlog.CollectionLogSchemaExporter.export(client).getTabs())
+				{
+					for (io.myscape.plugin.collectionlog.CollectionLogSchema.Page page : tab.getPages())
+					{
+						ids.addAll(page.getItemIds());
+					}
+				}
+				liveCollectionLogSchemaIds = ids;
+			}
+			Map<Integer, Integer> captured = collectionLogItemCapture.snapshotCapturedItems();
+			Set<Integer> zeroQuantity = collectionLogItemCapture.snapshotZeroQuantityItemIds();
+			List<Integer> unknown = new ArrayList<>();
+			for (Integer id : captured.keySet())
+			{
+				if (!liveCollectionLogSchemaIds.contains(id))
+				{
+					unknown.add(id);
+				}
+			}
+			boolean dossierCaptured = captured.containsKey(30803);
+			if (unknown.isEmpty() && zeroQuantity.isEmpty() && dossierCaptured)
+			{
+				return;
+			}
+			String message = "[myscape clog] captured " + captured.size()
+				+ "; ids not in game's log structure: " + unknown
+				+ "; zero-qty ids: " + zeroQuantity
+				+ "; Dossier 30803 in structure=" + liveCollectionLogSchemaIds.contains(30803)
+				+ " captured=" + dossierCaptured;
+			if (message.equals(lastCollectionLogDiagnostic))
+			{
+				return;
+			}
+			lastCollectionLogDiagnostic = message;
+			chatMessageManager.queue(QueuedMessage.builder()
+				.type(ChatMessageType.CONSOLE)
+				.runeLiteFormattedMessage(message)
+				.build());
+		}
+		catch (RuntimeException e)
+		{
+			// Diagnostic only -- never let it affect the capture/sync.
+		}
+	}
+
 	/** Fires once per obtained collection log item, as a result of
 	 * onScriptPostFired's own triggered refresh above -- see
 	 * collectionLogItemCapture's own onScriptPreFired doc for the
@@ -2723,6 +2796,7 @@ public class MyscapePlugin extends Plugin
 					items.add(new MyscapeClient.CollectionLogItem(entry.getKey(), entry.getValue()));
 				}
 				latestCollectionLogItems = items;
+				reportCollectionLogDiagnostic();
 				scheduleSyncDebounced();
 			}
 
