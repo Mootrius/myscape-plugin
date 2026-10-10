@@ -14,11 +14,11 @@ The myscape RuneLite plugin works in-tandem with the [myscape.io](https://myscap
 
 To link your OSRS character to the site, you'll need to first create an account on [myscape.io](https://myscape.io/), after which you'll be prompted to generate a code:
 
-![Generate code](docs/integration-generate-code.png)
+<img src="docs/integration-generate-code.png" alt="Generate code" width="100%">
 
 Once you've generated the code, copy and paste it into the RuneLite myscape plugin sidebar:
 
-![myscape plugin sidebar](docs/integration-plugin-panel.png)
+<img src="docs/integration-plugin-panel.png" alt="myscape plugin sidebar" width="100%">
 
 Once the connection is made, your [myscape.io](https://myscape.io/) apps will start to populate the data they need! You'll want to open a couple of things before they'll register on the site: the in-game collection log and whichever storages you want synced.
 
@@ -28,27 +28,27 @@ From there, you can simply play the game and the plugin and site will work toget
 
 [Character Overview](https://myscape.io/c/mv7pu): An optionally shareable profile that shows your character's collection log data, skill levels, quest completions, achievement diary tiers, and combat task tiers.
 
-![Character Overview](docs/app-character-overview.png)
+<img src="docs/app-character-overview.png" alt="Character Overview" width="100%">
 
 [Loot Tracker](https://myscape.io/s/njnku7mnas): An enhanced, feature-rich improvement on loot tracking allowing for historical data, drill-downs, and searching.
 
-![Loot Tracker](docs/app-loot-tracker.png)
+<img src="docs/app-loot-tracker.png" alt="Loot Tracker" width="100%">
 
 [Purchase Goals](https://myscape.io/s/k3efa9ewsu): A sandboxed inventory and gear setup tracker, syncing your current bank's content against your desired purchases, with live Grand Exchange pricing.
 
-![Purchase Goals](docs/app-purchase-goals.png)
+<img src="docs/app-purchase-goals.png" alt="Purchase Goals" width="100%">
 
 [Storages Viewer](https://myscape.io/s/3fzrz7q5z2): A fully searchable, sortable, and filterable conglomeration of every one of your items, from every storage, across the game.
 
-![Storages Viewer](docs/app-storages-viewer.png)
+<img src="docs/app-storages-viewer.png" alt="Storages Viewer" width="100%">
 
 [Mindmaps](https://myscape.io/s/5dc8c49ncb): A feature-rich app that allows you to organize your goals and progress, complete with auto-detecting completion functionality.
 
-![Mindmaps](docs/app-mindmaps.png)
+<img src="docs/app-mindmaps.png" alt="Mindmaps" width="100%">
 
 [Goal Tracking](https://myscape.io/s/nysq229vq7): A personalized and customizable board for you to fill with your various goals for your character, complete with auto-detecting and updating progress bars.
 
-![Goal Tracking](docs/app-goal-tracking.png)
+<img src="docs/app-goal-tracking.png" alt="Goal Tracking" width="100%">
 
 ## Social
 
