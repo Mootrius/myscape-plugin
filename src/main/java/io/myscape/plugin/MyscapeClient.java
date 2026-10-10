@@ -2,13 +2,10 @@ package io.myscape.plugin;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
-import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import java.io.IOException;
 import java.util.Base64;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import net.runelite.client.config.ConfigManager;
 import okhttp3.Call;
 import okhttp3.Callback;
@@ -47,6 +44,23 @@ class MyscapeClient
 		this.configManager = configManager;
 	}
 
+	/** Id, name and quantity of one stored item. Each container has its own
+	 * subclass so one container's snapshot can't be passed to another's
+	 * sync method. */
+	abstract static class StoredItem
+	{
+		final int itemId;
+		final String itemName;
+		final int quantity;
+
+		StoredItem(int itemId, String itemName, int quantity)
+		{
+			this.itemId = itemId;
+			this.itemName = itemName;
+			this.quantity = quantity;
+		}
+	}
+
 	/** One bank slot's contents -- just enough for the server to know
 	 * what's owned and how many (see BankItem in the Mootrius/myscape
 	 * repo's app/models.py). A *tradeable* item's name/icon/price are
@@ -58,17 +72,11 @@ class MyscapeClient
 	 * (see MyscapePlugin's item-reading methods), even though only the
 	 * untradeable case ever actually needs it -- simpler than this
 	 * plugin having to know ahead of time which items are tradeable. */
-	static final class BankItem
+	static final class BankItem extends StoredItem
 	{
-		final int itemId;
-		final String itemName;
-		final int quantity;
-
 		BankItem(int itemId, String itemName, int quantity)
 		{
-			this.itemId = itemId;
-			this.itemName = itemName;
-			this.quantity = quantity;
+			super(itemId, itemName, quantity);
 		}
 	}
 
@@ -76,17 +84,11 @@ class MyscapeClient
 	 * BankItem) so a caller can never accidentally pass one container's
 	 * snapshot to the other's sync method -- see InventoryItem in the
 	 * Mootrius/myscape repo's app/models.py for the server side. */
-	static final class InventoryItem
+	static final class InventoryItem extends StoredItem
 	{
-		final int itemId;
-		final String itemName;
-		final int quantity;
-
 		InventoryItem(int itemId, String itemName, int quantity)
 		{
-			this.itemId = itemId;
-			this.itemName = itemName;
-			this.quantity = quantity;
+			super(itemId, itemName, quantity);
 		}
 	}
 
@@ -122,17 +124,11 @@ class MyscapeClient
 	 * "supplies" gear-slot flag -- a potion sitting in storage can now
 	 * be recognized as genuinely owned instead of needing to be marked
 	 * always-owned by hand. */
-	static final class PotionStorageItem
+	static final class PotionStorageItem extends StoredItem
 	{
-		final int itemId;
-		final String itemName;
-		final int quantity;
-
 		PotionStorageItem(int itemId, String itemName, int quantity)
 		{
-			this.itemId = itemId;
-			this.itemName = itemName;
-			this.quantity = quantity;
+			super(itemId, itemName, quantity);
 		}
 	}
 
@@ -150,17 +146,11 @@ class MyscapeClient
 	 * number of distinct entries per request -- routing those through a
 	 * separate endpoint (mirroring Potion Storage) avoids a stocked
 	 * pouch ever pushing an otherwise-normal inventory over that cap. */
-	static final class RunePouchItem
+	static final class RunePouchItem extends StoredItem
 	{
-		final int itemId;
-		final String itemName;
-		final int quantity;
-
 		RunePouchItem(int itemId, String itemName, int quantity)
 		{
-			this.itemId = itemId;
-			this.itemName = itemName;
-			this.quantity = quantity;
+			super(itemId, itemName, quantity);
 		}
 	}
 
@@ -173,17 +163,11 @@ class MyscapeClient
 	 * straightforward way Bank is, only reporting contents once the
 	 * player has actually opened it at least once this session (same
 	 * caveat as Bank). */
-	static final class LootingBagItem
+	static final class LootingBagItem extends StoredItem
 	{
-		final int itemId;
-		final String itemName;
-		final int quantity;
-
 		LootingBagItem(int itemId, String itemName, int quantity)
 		{
-			this.itemId = itemId;
-			this.itemName = itemName;
-			this.quantity = quantity;
+			super(itemId, itemName, quantity);
 		}
 	}
 
@@ -195,17 +179,11 @@ class MyscapeClient
 	 * (InventoryID.SEED_VAULT), read the same straightforward way, only
 	 * reporting contents once the player has actually opened it at
 	 * least once this session (same caveat as Bank/Looting Bag). */
-	static final class SeedVaultItem
+	static final class SeedVaultItem extends StoredItem
 	{
-		final int itemId;
-		final String itemName;
-		final int quantity;
-
 		SeedVaultItem(int itemId, String itemName, int quantity)
 		{
-			this.itemId = itemId;
-			this.itemName = itemName;
-			this.quantity = quantity;
+			super(itemId, itemName, quantity);
 		}
 	}
 
@@ -217,17 +195,11 @@ class MyscapeClient
 	 * straightforward way, only reporting contents once the player has
 	 * actually opened it at least once this session (same caveat as
 	 * Bank/Looting Bag/Seed Vault). */
-	static final class TackleBoxItem
+	static final class TackleBoxItem extends StoredItem
 	{
-		final int itemId;
-		final String itemName;
-		final int quantity;
-
 		TackleBoxItem(int itemId, String itemName, int quantity)
 		{
-			this.itemId = itemId;
-			this.itemName = itemName;
-			this.quantity = quantity;
+			super(itemId, itemName, quantity);
 		}
 	}
 
@@ -249,17 +221,11 @@ class MyscapeClient
 	 * store, not six. Same open-it-once caveat as every other source
 	 * here: contents are only reported once the player has opened the
 	 * Costume Room interface at least once this session. */
-	static final class PohItem
+	static final class PohItem extends StoredItem
 	{
-		final int itemId;
-		final String itemName;
-		final int quantity;
-
 		PohItem(int itemId, String itemName, int quantity)
 		{
-			this.itemId = itemId;
-			this.itemName = itemName;
-			this.quantity = quantity;
+			super(itemId, itemName, quantity);
 		}
 	}
 
@@ -273,17 +239,11 @@ class MyscapeClient
 	 * caveat as everywhere else here). Grouped under "PORTABLE" rather
 	 * than "PoH" on Storages Viewer -- it's carried, not house
 	 * storage. */
-	static final class ForestryKitItem
+	static final class ForestryKitItem extends StoredItem
 	{
-		final int itemId;
-		final String itemName;
-		final int quantity;
-
 		ForestryKitItem(int itemId, String itemName, int quantity)
 		{
-			this.itemId = itemId;
-			this.itemName = itemName;
-			this.quantity = quantity;
+			super(itemId, itemName, quantity);
 		}
 	}
 
@@ -295,17 +255,11 @@ class MyscapeClient
 	 * straightforward way as Tackle Box/Forestry Kit, only reporting
 	 * contents once the player has actually opened it at least once
 	 * this session. */
-	static final class SeedBoxItem
+	static final class SeedBoxItem extends StoredItem
 	{
-		final int itemId;
-		final String itemName;
-		final int quantity;
-
 		SeedBoxItem(int itemId, String itemName, int quantity)
 		{
-			this.itemId = itemId;
-			this.itemName = itemName;
-			this.quantity = quantity;
+			super(itemId, itemName, quantity);
 		}
 	}
 
@@ -320,17 +274,11 @@ class MyscapeClient
 	 * this straight off InterfaceID.BOOKOFSCROLLS' own widgets instead
 	 * -- see that method's own comment for the widget layout a second
 	 * diagnostic found. */
-	static final class MasterScrollBookItem
+	static final class MasterScrollBookItem extends StoredItem
 	{
-		final int itemId;
-		final String itemName;
-		final int quantity;
-
 		MasterScrollBookItem(int itemId, String itemName, int quantity)
 		{
-			this.itemId = itemId;
-			this.itemName = itemName;
-			this.quantity = quantity;
+			super(itemId, itemName, quantity);
 		}
 	}
 
@@ -344,17 +292,11 @@ class MyscapeClient
 	 * since this is one of the "virtual storage" sources, now also once
 	 * it's confirmed empty on that first open -- see
 	 * MyscapePlugin#pendingContainerRereadTicks for that fix). */
-	static final class HuntsmansKitItem
+	static final class HuntsmansKitItem extends StoredItem
 	{
-		final int itemId;
-		final String itemName;
-		final int quantity;
-
 		HuntsmansKitItem(int itemId, String itemName, int quantity)
 		{
-			this.itemId = itemId;
-			this.itemName = itemName;
-			this.quantity = quantity;
+			super(itemId, itemName, quantity);
 		}
 	}
 
@@ -372,17 +314,11 @@ class MyscapeClient
 	 * virtual storages -- see MyscapePlugin#readBoatCargoItems and
 	 * #pendingContainerRereadTicks for the empty-on-first-open fix this
 	 * source also needed. */
-	static final class BoatCargoItem
+	static final class BoatCargoItem extends StoredItem
 	{
-		final int itemId;
-		final String itemName;
-		final int quantity;
-
 		BoatCargoItem(int itemId, String itemName, int quantity)
 		{
-			this.itemId = itemId;
-			this.itemName = itemName;
-			this.quantity = quantity;
+			super(itemId, itemName, quantity);
 		}
 	}
 
@@ -818,32 +754,14 @@ class MyscapeClient
 	 * currently in the bank, not just what changed. */
 	void syncBank(List<BankItem> items, SyncCallback callback)
 	{
-		JsonArray itemsJson = new JsonArray();
-		for (BankItem item : items)
-		{
-			JsonObject itemJson = new JsonObject();
-			itemJson.addProperty("item_id", item.itemId);
-			itemJson.addProperty("item_name", item.itemName);
-			itemJson.addProperty("quantity", item.quantity);
-			itemsJson.add(itemJson);
-		}
-		syncItems("/api/players/me/bank", itemsJson, callback);
+		syncStorage("/api/players/me/bank", items, callback);
 	}
 
 	/** Same deal as syncBank, for the main 28-slot inventory (POST
 	 * /api/players/me/inventory). */
 	void syncInventory(List<InventoryItem> items, SyncCallback callback)
 	{
-		JsonArray itemsJson = new JsonArray();
-		for (InventoryItem item : items)
-		{
-			JsonObject itemJson = new JsonObject();
-			itemJson.addProperty("item_id", item.itemId);
-			itemJson.addProperty("item_name", item.itemName);
-			itemJson.addProperty("quantity", item.quantity);
-			itemsJson.add(itemJson);
-		}
-		syncItems("/api/players/me/inventory", itemsJson, callback);
+		syncStorage("/api/players/me/inventory", items, callback);
 	}
 
 	/** Same deal as syncBank, for worn equipment (POST
@@ -868,80 +786,35 @@ class MyscapeClient
 	 * /api/players/me/potion-storage). */
 	void syncPotionStorage(List<PotionStorageItem> items, SyncCallback callback)
 	{
-		JsonArray itemsJson = new JsonArray();
-		for (PotionStorageItem item : items)
-		{
-			JsonObject itemJson = new JsonObject();
-			itemJson.addProperty("item_id", item.itemId);
-			itemJson.addProperty("item_name", item.itemName);
-			itemJson.addProperty("quantity", item.quantity);
-			itemsJson.add(itemJson);
-		}
-		syncItems("/api/players/me/potion-storage", itemsJson, callback);
+		syncStorage("/api/players/me/potion-storage", items, callback);
 	}
 
 	/** Same deal as syncBank, for a Rune Pouch's contents (POST
 	 * /api/players/me/rune-pouch). */
 	void syncRunePouch(List<RunePouchItem> items, SyncCallback callback)
 	{
-		JsonArray itemsJson = new JsonArray();
-		for (RunePouchItem item : items)
-		{
-			JsonObject itemJson = new JsonObject();
-			itemJson.addProperty("item_id", item.itemId);
-			itemJson.addProperty("item_name", item.itemName);
-			itemJson.addProperty("quantity", item.quantity);
-			itemsJson.add(itemJson);
-		}
-		syncItems("/api/players/me/rune-pouch", itemsJson, callback);
+		syncStorage("/api/players/me/rune-pouch", items, callback);
 	}
 
 	/** Same deal as syncBank, for a Looting Bag's contents (POST
 	 * /api/players/me/looting-bag). */
 	void syncLootingBag(List<LootingBagItem> items, SyncCallback callback)
 	{
-		JsonArray itemsJson = new JsonArray();
-		for (LootingBagItem item : items)
-		{
-			JsonObject itemJson = new JsonObject();
-			itemJson.addProperty("item_id", item.itemId);
-			itemJson.addProperty("item_name", item.itemName);
-			itemJson.addProperty("quantity", item.quantity);
-			itemsJson.add(itemJson);
-		}
-		syncItems("/api/players/me/looting-bag", itemsJson, callback);
+		syncStorage("/api/players/me/looting-bag", items, callback);
 	}
 
 	/** Same deal as syncBank, for the Seed Vault's contents (POST
 	 * /api/players/me/seed-vault). */
 	void syncSeedVault(List<SeedVaultItem> items, SyncCallback callback)
 	{
-		JsonArray itemsJson = new JsonArray();
-		for (SeedVaultItem item : items)
-		{
-			JsonObject itemJson = new JsonObject();
-			itemJson.addProperty("item_id", item.itemId);
-			itemJson.addProperty("item_name", item.itemName);
-			itemJson.addProperty("quantity", item.quantity);
-			itemsJson.add(itemJson);
-		}
-		syncItems("/api/players/me/seed-vault", itemsJson, callback);
+		syncStorage("/api/players/me/seed-vault", items, callback);
 	}
 
 	/** Same deal as syncBank, for a Tackle Box's contents (POST
 	 * /api/players/me/tackle-box). */
 	void syncTackleBox(List<TackleBoxItem> items, SyncCallback callback)
 	{
-		JsonArray itemsJson = new JsonArray();
-		for (TackleBoxItem item : items)
-		{
-			JsonObject itemJson = new JsonObject();
-			itemJson.addProperty("item_id", item.itemId);
-			itemJson.addProperty("item_name", item.itemName);
-			itemJson.addProperty("quantity", item.quantity);
-			itemsJson.add(itemJson);
-		}
-		syncItems("/api/players/me/tackle-box", itemsJson, callback);
+		syncStorage("/api/players/me/tackle-box", items, callback);
 	}
 
 	/** Same deal as syncBank, for the whole PoH Costume Room's contents
@@ -952,48 +825,21 @@ class MyscapeClient
 	 * Costume Room. */
 	void syncPoh(List<PohItem> items, SyncCallback callback)
 	{
-		JsonArray itemsJson = new JsonArray();
-		for (PohItem item : items)
-		{
-			JsonObject itemJson = new JsonObject();
-			itemJson.addProperty("item_id", item.itemId);
-			itemJson.addProperty("item_name", item.itemName);
-			itemJson.addProperty("quantity", item.quantity);
-			itemsJson.add(itemJson);
-		}
-		syncItems("/api/players/me/poh", itemsJson, callback);
+		syncStorage("/api/players/me/poh", items, callback);
 	}
 
 	/** Same deal as syncBank, for the Forestry Kit's contents (POST
 	 * /api/players/me/forestry-kit). */
 	void syncForestryKit(List<ForestryKitItem> items, SyncCallback callback)
 	{
-		JsonArray itemsJson = new JsonArray();
-		for (ForestryKitItem item : items)
-		{
-			JsonObject itemJson = new JsonObject();
-			itemJson.addProperty("item_id", item.itemId);
-			itemJson.addProperty("item_name", item.itemName);
-			itemJson.addProperty("quantity", item.quantity);
-			itemsJson.add(itemJson);
-		}
-		syncItems("/api/players/me/forestry-kit", itemsJson, callback);
+		syncStorage("/api/players/me/forestry-kit", items, callback);
 	}
 
 	/** Same deal as syncBank, for a Seed Box's contents (POST
 	 * /api/players/me/seed-box). */
 	void syncSeedBox(List<SeedBoxItem> items, SyncCallback callback)
 	{
-		JsonArray itemsJson = new JsonArray();
-		for (SeedBoxItem item : items)
-		{
-			JsonObject itemJson = new JsonObject();
-			itemJson.addProperty("item_id", item.itemId);
-			itemJson.addProperty("item_name", item.itemName);
-			itemJson.addProperty("quantity", item.quantity);
-			itemsJson.add(itemJson);
-		}
-		syncItems("/api/players/me/seed-box", itemsJson, callback);
+		syncStorage("/api/players/me/seed-box", items, callback);
 	}
 
 	/** Same deal as syncBank, for the Master Scroll Book's contents
@@ -1002,32 +848,14 @@ class MyscapeClient
 	 * unlike every other source here. */
 	void syncMasterScrollBook(List<MasterScrollBookItem> items, SyncCallback callback)
 	{
-		JsonArray itemsJson = new JsonArray();
-		for (MasterScrollBookItem item : items)
-		{
-			JsonObject itemJson = new JsonObject();
-			itemJson.addProperty("item_id", item.itemId);
-			itemJson.addProperty("item_name", item.itemName);
-			itemJson.addProperty("quantity", item.quantity);
-			itemsJson.add(itemJson);
-		}
-		syncItems("/api/players/me/master-scroll-book", itemsJson, callback);
+		syncStorage("/api/players/me/master-scroll-book", items, callback);
 	}
 
 	/** Same deal as syncBank, for a Huntsman's Kit's contents (POST
 	 * /api/players/me/huntsmans-kit). */
 	void syncHuntsmansKit(List<HuntsmansKitItem> items, SyncCallback callback)
 	{
-		JsonArray itemsJson = new JsonArray();
-		for (HuntsmansKitItem item : items)
-		{
-			JsonObject itemJson = new JsonObject();
-			itemJson.addProperty("item_id", item.itemId);
-			itemJson.addProperty("item_name", item.itemName);
-			itemJson.addProperty("quantity", item.quantity);
-			itemsJson.add(itemJson);
-		}
-		syncItems("/api/players/me/huntsmans-kit", itemsJson, callback);
+		syncStorage("/api/players/me/huntsmans-kit", items, callback);
 	}
 
 	/** Same deal as syncBank, for ONE boat's Cargo Hold contents (POST
@@ -1041,16 +869,7 @@ class MyscapeClient
 	 * than risking wiping out the other four boats' already-known cargo. */
 	void syncBoatCargo(int slot, List<BoatCargoItem> items, SyncCallback callback)
 	{
-		JsonArray itemsJson = new JsonArray();
-		for (BoatCargoItem item : items)
-		{
-			JsonObject itemJson = new JsonObject();
-			itemJson.addProperty("item_id", item.itemId);
-			itemJson.addProperty("item_name", item.itemName);
-			itemJson.addProperty("quantity", item.quantity);
-			itemsJson.add(itemJson);
-		}
-		syncItems("/api/players/me/boat-cargo/" + slot, itemsJson, callback);
+		syncStorage("/api/players/me/boat-cargo/" + slot, items, callback);
 	}
 
 	/** Sends the player's current level+xp in every skill the plugin has
@@ -1374,6 +1193,21 @@ class MyscapeClient
 		JsonObject body = new JsonObject();
 		body.addProperty("item_name", itemName);
 		syncPayload("/api/players/me/collection-log/item", body, "applied_count", callback);
+	}
+
+	/** Sends one storage container's contents as an {"items": [...]} body. */
+	private void syncStorage(String path, List<? extends StoredItem> items, SyncCallback callback)
+	{
+		JsonArray itemsJson = new JsonArray();
+		for (StoredItem item : items)
+		{
+			JsonObject itemJson = new JsonObject();
+			itemJson.addProperty("item_id", item.itemId);
+			itemJson.addProperty("item_name", item.itemName);
+			itemJson.addProperty("quantity", item.quantity);
+			itemsJson.add(itemJson);
+		}
+		syncItems(path, itemsJson, callback);
 	}
 
 	/** Shared by every "current state" container sync above (syncBank,

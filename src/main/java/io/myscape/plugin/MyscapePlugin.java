@@ -824,6 +824,22 @@ public class MyscapePlugin extends Plugin
 		return quantities;
 	}
 
+	/** Reads a container's items, merged by id, into the given item type. */
+	private <T> List<T> readItems(ItemContainer container, ItemFactory<T> factory)
+	{
+		List<T> items = new ArrayList<>();
+		for (Map.Entry<Integer, Integer> entry : aggregateQuantities(container).entrySet())
+		{
+			items.add(factory.create(entry.getKey(), resolveItemName(entry.getKey()), entry.getValue()));
+		}
+		return items;
+	}
+
+	private interface ItemFactory<T>
+	{
+		T create(int itemId, String itemName, int quantity);
+	}
+
 	/** Looks up an item's real display name via RuneLite's own item
 	 * definitions (not the OSRS Wiki) -- unlike the wiki's GE mapping,
 	 * this covers every item in the game, tradeable or not, which is
@@ -890,12 +906,7 @@ public class MyscapePlugin extends Plugin
 
 	private List<MyscapeClient.InventoryItem> readInventoryItems(ItemContainer inventory)
 	{
-		List<MyscapeClient.InventoryItem> items = new ArrayList<>();
-		for (Map.Entry<Integer, Integer> entry : aggregateQuantities(inventory).entrySet())
-		{
-			items.add(new MyscapeClient.InventoryItem(entry.getKey(), resolveItemName(entry.getKey()), entry.getValue()));
-		}
-		return items;
+		return readItems(inventory, MyscapeClient.InventoryItem::new);
 	}
 
 	/** A Looting Bag genuinely is an ItemContainer (InventoryID.
@@ -905,12 +916,7 @@ public class MyscapePlugin extends Plugin
 	 * least once this session (same caveat as Bank). */
 	private List<MyscapeClient.LootingBagItem> readLootingBagItems(ItemContainer lootingBag)
 	{
-		List<MyscapeClient.LootingBagItem> items = new ArrayList<>();
-		for (Map.Entry<Integer, Integer> entry : aggregateQuantities(lootingBag).entrySet())
-		{
-			items.add(new MyscapeClient.LootingBagItem(entry.getKey(), resolveItemName(entry.getKey()), entry.getValue()));
-		}
-		return items;
+		return readItems(lootingBag, MyscapeClient.LootingBagItem::new);
 	}
 
 	/** The Farming Guild Seed Vault also genuinely is an ItemContainer
@@ -920,12 +926,7 @@ public class MyscapePlugin extends Plugin
 	 * session (same caveat as Bank/Looting Bag). */
 	private List<MyscapeClient.SeedVaultItem> readSeedVaultItems(ItemContainer seedVault)
 	{
-		List<MyscapeClient.SeedVaultItem> items = new ArrayList<>();
-		for (Map.Entry<Integer, Integer> entry : aggregateQuantities(seedVault).entrySet())
-		{
-			items.add(new MyscapeClient.SeedVaultItem(entry.getKey(), resolveItemName(entry.getKey()), entry.getValue()));
-		}
-		return items;
+		return readItems(seedVault, MyscapeClient.SeedVaultItem::new);
 	}
 
 	/** A Tackle Box also genuinely is an ItemContainer (InventoryID.
@@ -935,12 +936,7 @@ public class MyscapePlugin extends Plugin
 	 * caveat as Bank/Looting Bag/Seed Vault). */
 	private List<MyscapeClient.TackleBoxItem> readTackleBoxItems(ItemContainer tackleBox)
 	{
-		List<MyscapeClient.TackleBoxItem> items = new ArrayList<>();
-		for (Map.Entry<Integer, Integer> entry : aggregateQuantities(tackleBox).entrySet())
-		{
-			items.add(new MyscapeClient.TackleBoxItem(entry.getKey(), resolveItemName(entry.getKey()), entry.getValue()));
-		}
-		return items;
+		return readItems(tackleBox, MyscapeClient.TackleBoxItem::new);
 	}
 
 	/** The whole PoH Costume Room also genuinely is an ItemContainer --
@@ -962,12 +958,7 @@ public class MyscapePlugin extends Plugin
 	 * comment in MyscapeClient.java. */
 	private List<MyscapeClient.PohItem> readPohItems(ItemContainer poh)
 	{
-		List<MyscapeClient.PohItem> items = new ArrayList<>();
-		for (Map.Entry<Integer, Integer> entry : aggregateQuantities(poh).entrySet())
-		{
-			items.add(new MyscapeClient.PohItem(entry.getKey(), resolveItemName(entry.getKey()), entry.getValue()));
-		}
-		return items;
+		return readItems(poh, MyscapeClient.PohItem::new);
 	}
 
 	/** The Forestry Kit also genuinely is an ItemContainer
@@ -977,12 +968,7 @@ public class MyscapePlugin extends Plugin
 	 * at least once this session. */
 	private List<MyscapeClient.ForestryKitItem> readForestryKitItems(ItemContainer forestryKit)
 	{
-		List<MyscapeClient.ForestryKitItem> items = new ArrayList<>();
-		for (Map.Entry<Integer, Integer> entry : aggregateQuantities(forestryKit).entrySet())
-		{
-			items.add(new MyscapeClient.ForestryKitItem(entry.getKey(), resolveItemName(entry.getKey()), entry.getValue()));
-		}
-		return items;
+		return readItems(forestryKit, MyscapeClient.ForestryKitItem::new);
 	}
 
 	/** A Seed Box also genuinely is an ItemContainer
@@ -994,12 +980,7 @@ public class MyscapePlugin extends Plugin
 	 * MyscapeClient.java. */
 	private List<MyscapeClient.SeedBoxItem> readSeedBoxItems(ItemContainer seedBox)
 	{
-		List<MyscapeClient.SeedBoxItem> items = new ArrayList<>();
-		for (Map.Entry<Integer, Integer> entry : aggregateQuantities(seedBox).entrySet())
-		{
-			items.add(new MyscapeClient.SeedBoxItem(entry.getKey(), resolveItemName(entry.getKey()), entry.getValue()));
-		}
-		return items;
+		return readItems(seedBox, MyscapeClient.SeedBoxItem::new);
 	}
 
 	/** A Huntsman's Kit also genuinely is an ItemContainer
@@ -1009,12 +990,7 @@ public class MyscapePlugin extends Plugin
 	 * actually opened it at least once this session. */
 	private List<MyscapeClient.HuntsmansKitItem> readHuntsmansKitItems(ItemContainer huntsmansKit)
 	{
-		List<MyscapeClient.HuntsmansKitItem> items = new ArrayList<>();
-		for (Map.Entry<Integer, Integer> entry : aggregateQuantities(huntsmansKit).entrySet())
-		{
-			items.add(new MyscapeClient.HuntsmansKitItem(entry.getKey(), resolveItemName(entry.getKey()), entry.getValue()));
-		}
-		return items;
+		return readItems(huntsmansKit, MyscapeClient.HuntsmansKitItem::new);
 	}
 
 	/** One boat's Cargo Hold also genuinely is an ItemContainer (one of
@@ -1032,12 +1008,7 @@ public class MyscapePlugin extends Plugin
 	 * everywhere else around this. */
 	private List<MyscapeClient.BoatCargoItem> readBoatCargoItems(ItemContainer boatCargo)
 	{
-		List<MyscapeClient.BoatCargoItem> items = new ArrayList<>();
-		for (Map.Entry<Integer, Integer> entry : aggregateQuantities(boatCargo).entrySet())
-		{
-			items.add(new MyscapeClient.BoatCargoItem(entry.getKey(), resolveItemName(entry.getKey()), entry.getValue()));
-		}
-		return items;
+		return readItems(boatCargo, MyscapeClient.BoatCargoItem::new);
 	}
 
 	/** Unlike bank/inventory, equipment is read by fixed slot index
