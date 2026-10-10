@@ -766,6 +766,30 @@ class MyscapePanel extends PluginPanel
 		});
 	}
 
+	/** Called by the plugin (see MyscapePlugin#onGameTick) when the
+	 * logged-in character's display name differs from the last one
+	 * reported -- i.e. on first login after linking and after an in-game
+	 * name change. onReported fires only once the server has accepted
+	 * it, so the plugin can stop re-sending; failures (offline, not
+	 * linked yet) are ignored and retried on a later tick. */
+	void syncRunescapeNameInBackground(long accountHash, String runescapeName, Runnable onReported)
+	{
+		client.syncRunescapeName(accountHash, runescapeName, new MyscapeClient.SyncCallback()
+		{
+			@Override
+			public void onSuccess(int updated)
+			{
+				onReported.run();
+			}
+
+			@Override
+			public void onFailure(String message)
+			{
+				// Ignored -- the plugin retries after its cooldown.
+			}
+		});
+	}
+
 	/** Called by the plugin (see MyscapePlugin#onChatMessage) the
 	 * moment a chatbox kill-count line is parsed -- fires immediately,
 	 * same as syncLootInBackground above and for the same reason: a

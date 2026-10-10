@@ -452,6 +452,15 @@ public class MyscapePlugin extends Plugin
 	private volatile Long currentAccountHash;
 	private volatile String currentRuneScapeName;
 
+	// The display name last accepted by myscape.io (see
+	// reportRuneScapeNameIfChanged) -- compared against
+	// currentRuneScapeName each tick so an in-game name change is sent
+	// once, and nameReportCooldownUntilMillis throttles retries while
+	// offline or not yet linked.
+	private volatile String lastReportedRuneScapeName;
+	private long nameReportCooldownUntilMillis;
+	private static final long NAME_REPORT_RETRY_MILLIS = 60_000L;
+
 	// Each container's most recently observed contents, captured
 	// synchronously on the client thread the moment its
 	// ItemContainerChanged fires (or, for inventory/equipment, the
@@ -764,6 +773,8 @@ public class MyscapePlugin extends Plugin
 		panel = null;
 		currentAccountHash = null;
 		currentRuneScapeName = null;
+		lastReportedRuneScapeName = null;
+		nameReportCooldownUntilMillis = 0;
 		latestBankItems = null;
 		latestInventoryItems = null;
 		latestEquipmentItems = null;
@@ -2607,6 +2618,28 @@ public class MyscapePlugin extends Plugin
 		}
 	}
 
+	/** Sends the logged-in character's display name to myscape.io when it
+	 * differs from the last one the server accepted, so an in-game name
+	 * change updates the website automatically. Runs on the client
+	 * thread (from onGameTick); the HTTP call itself is async. */
+	private void reportRuneScapeNameIfChanged()
+	{
+		String name = currentRuneScapeName;
+		Long accountHash = currentAccountHash;
+		if (panel == null || name == null || name.isEmpty() || accountHash == null || accountHash == -1L
+			|| name.equals(lastReportedRuneScapeName))
+		{
+			return;
+		}
+		long now = System.currentTimeMillis();
+		if (now < nameReportCooldownUntilMillis)
+		{
+			return;
+		}
+		nameReportCooldownUntilMillis = now + NAME_REPORT_RETRY_MILLIS;
+		panel.syncRunescapeNameInBackground(accountHash, name, () -> lastReportedRuneScapeName = name);
+	}
+
 	@Subscribe
 	public void onGameTick(GameTick tick)
 	{
@@ -2621,6 +2654,7 @@ public class MyscapePlugin extends Plugin
 			if (client.getLocalPlayer() != null)
 			{
 				currentRuneScapeName = client.getLocalPlayer().getName();
+				reportRuneScapeNameIfChanged();
 			}
 
 			// Either Potion Storage's own (tracked) varps fired since the

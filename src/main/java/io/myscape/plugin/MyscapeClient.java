@@ -1076,6 +1076,21 @@ class MyscapeClient
 		syncPayload("/api/players/me/skills", body, "skill_count", callback);
 	}
 
+	/** Reports the logged-in character's current display name (POST
+	 * /api/players/me/runescape-name -- see app/main.py in the
+	 * Mootrius/myscape repo) so an in-game name change shows up on the
+	 * website without re-linking. accountHash goes along so the server
+	 * only ever renames the character this API key is actually linked
+	 * to. callback's int is 1 if the stored name changed, 0 if it was
+	 * already current. */
+	void syncRunescapeName(long accountHash, String runescapeName, SyncCallback callback)
+	{
+		JsonObject body = new JsonObject();
+		body.addProperty("account_hash", Long.toUnsignedString(accountHash));
+		body.addProperty("runescape_name", runescapeName);
+		syncPayload("/api/players/me/runescape-name", body, "updated", callback);
+	}
+
 	/** Sends the player's full completed quest/miniquest list (POST
 	 * /api/players/me/quests -- see app/main.py in the Mootrius/myscape
 	 * repo) -- every net.runelite.api.Quest this client thread has seen
