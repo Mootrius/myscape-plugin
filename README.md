@@ -37,3 +37,5 @@ The myscape RuneLite plugin works in-tandem with the [myscape.io](https://myscap
 ![Mindmaps](docs/app-mindmaps.png)
 
 [Goal Tracking](https://myscape.io/s/nysq229vq7): A personalized and customizable board for you to fill with your various goals for your character, complete with auto-detecting and updating progress bars.
+
+![Goal Tracking](docs/app-goal-tracking.png)
