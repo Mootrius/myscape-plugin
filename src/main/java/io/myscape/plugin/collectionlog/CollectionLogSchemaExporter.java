@@ -10,42 +10,17 @@ import net.runelite.api.EnumComposition;
 import net.runelite.api.StructComposition;
 
 /**
- * Reads the collection log's full tab/page/item structure straight out
- * of the client's own cache data -- struct and enum compositions the
- * game ships with -- rather than needing it hand-compiled from the
- * wiki or copied from another project's own static file. The client
- * already knows every tab, every page within each tab, and every item
- * id a page can ever show; this just walks that data the same way the
- * game's own collection log interface does to build itself.
+ * Reads the collection log's tab/page/item structure from the client's cache data (struct and
+ * enum compositions). Structure only: obtained state is not cache data and is captured
+ * separately by {@link CollectionLogItemCapture}.
  *
- * <p>The five top-level tab struct ids, and the four struct param ids
- * used to pull a tab's name/page-enum and a page's name/item-enum off
- * of them, are not documented anywhere -- they were worked out by the
- * (BSD-2-licensed, open source) RuneLite "Collection Log" plugin
- * (github.com/evansloan/collection-log, see its
- * CollectionLogManager#initCollectionLog), which reads this exact same
- * cache data for its own local save file. The ids and the read order
- * below are taken from that plugin, credited here rather than
- * silently reproduced -- there is no independent way to derive them
- * that doesn't amount to the same reverse-engineering that project
- * already did. Everything else here (the {@link CollectionLogSchema}
- * shape, how it gets exported/used) is our own.
- *
- * <p>This intentionally stops at structure: which items exist on each
- * page, not which of them any particular player has obtained. Obtained
- * state isn't cache data -- it only becomes readable by actually
- * opening the collection log widget in-game (see RuneProfile's
- * CollectionLogWidgetSubscriber, credited separately where that gets
- * built) -- so it can't be read here alongside the structure, and
- * doesn't need to be: the structure is identical for every player on a
- * given game build, so it only ever needs exporting once and can then
- * live as a static resource on the myscape backend, rather than being
- * re-derived (or re-sent) on every player's own sync.
+ * <p>Credit: the tab struct ids and the struct param ids below, and the read order, come from the
+ * BSD-2-Clause "Collection Log" plugin (github.com/evansloan/collection-log,
+ * CollectionLogManager#initCollectionLog).
  */
 public final class CollectionLogSchemaExporter
 {
-	/** The five top-level collection log tabs, in the order the
-	 * in-game interface itself shows them along the top. */
+	/** Top-level tab structs, in in-game order. */
 	private static final List<Integer> TAB_STRUCT_IDS = Collections.unmodifiableList(
 		java.util.Arrays.asList(471, 472, 473, 474, 475) // Bosses, Raids, Clues, Minigames, Other
 	);
@@ -55,19 +30,11 @@ public final class CollectionLogSchemaExporter
 	private static final int PAGE_NAME_PARAM_ID = 689;
 	private static final int PAGE_ITEMS_ENUM_PARAM_ID = 690;
 
-	/** A dozen items where the id used inside a page's own item enum
-	 * (the "page struct" id) differs from the id the collection log
-	 * widget actually displays and the player actually receives (the
-	 * "item widget" id) -- both are real, valid item ids, they just
-	 * don't agree with each other for these specific items (mostly
-	 * newer "recolored"/variant drops added after the original id was
-	 * already in the enum). Left unmapped, the same physical drop
-	 * would show up under two different ids depending on whether it
-	 * was read from here or from a live obtained-item capture, and
-	 * silently fail to match. Values taken from the same
-	 * evansloan/collection-log project credited above (its own
-	 * ITEM_ID_MAP), which found these by comparing the two sources
-	 * directly against real accounts. */
+	/**
+	 * Items whose id in a page's item enum differs from the id the collection log widget
+	 * displays. Without this remap the same drop would appear under two ids and fail to match
+	 * a live capture. Values are from evansloan/collection-log (ITEM_ID_MAP).
+	 */
 	private static final Map<Integer, Integer> PAGE_STRUCT_ITEM_ID_TO_WIDGET_ITEM_ID = buildItemIdRemap();
 
 	private static Map<Integer, Integer> buildItemIdRemap()
@@ -92,16 +59,10 @@ public final class CollectionLogSchemaExporter
 	{
 	}
 
-	/** Walks the five tab structs, and everything they point to, into
-	 * a full {@link CollectionLogSchema}. Reads cache data only --
-	 * struct/enum compositions -- so unlike a capture of a player's
-	 * actual obtained items, this does not need the collection log
-	 * widget to be open, or even the local player to exist yet; it
-	 * only needs a live {@code Client} with the game's cache loaded,
-	 * which is true from login onward. Still only ever meant to be
-	 * called from the client thread, same as every other cache-data
-	 * read in this plugin (see MyscapePlugin#captureCharacterModel's
-	 * own doc for why that split matters generally). */
+	/**
+	 * Walks the tab structs and everything they reference into a {@link CollectionLogSchema}.
+	 * Needs only a loaded cache, not an open widget. Call from the client thread.
+	 */
 	public static CollectionLogSchema export(Client client)
 	{
 		List<CollectionLogSchema.Tab> tabs = new ArrayList<>();
@@ -112,11 +73,7 @@ public final class CollectionLogSchemaExporter
 			String tabName = tabStruct.getStringValue(TAB_NAME_PARAM_ID);
 			int tabPageEnumId = tabStruct.getIntValue(TAB_PAGE_ENUM_PARAM_ID);
 			EnumComposition tabPageEnum = client.getEnum(tabPageEnumId);
-			// client.getEnum can return null for an id that doesn't
-			// resolve (see this same defensive check already used
-			// elsewhere in this plugin, e.g. readPotionStorageItems) --
-			// skip rather than NPE, so one unexpected tab doesn't take
-			// the whole export down with it.
+			// getEnum can return null for an unresolved id; skip the tab rather than fail the export.
 			if (tabPageEnum == null)
 			{
 				continue;

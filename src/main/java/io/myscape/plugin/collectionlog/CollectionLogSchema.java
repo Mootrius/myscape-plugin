@@ -4,21 +4,9 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * The collection log's own tab/page/item structure -- "Bosses" contains
- * a page per boss, "Zulrah" contains a fixed list of item ids, and so
- * on -- with no obtained/quantity state of any kind. See {@link
- * CollectionLogSchemaExporter} for how this gets read out of the live
- * client, and that class's own top-of-file doc for why this is read
- * from the client at all rather than hand-compiled from the wiki.
- *
- * <p>This is a one-time export target, not a shape synced on every
- * player's regular update: the whole point of reading it from cache
- * data (rather than scraping the collection log widget, which is how
- * per-item obtained/quantity state has to be captured) is that it is
- * the same for every player on a given game build, so it only needs
- * capturing once and can then live as a static resource on the myscape
- * backend -- see CollectionLogSchemaExporter's own doc for the export
- * flow this feeds.
+ * The collection log's tab/page/item structure, without any obtained or quantity state.
+ * It is identical for every player on a given game build, so it is exported once from cache
+ * data. See {@link CollectionLogSchemaExporter}.
  */
 public final class CollectionLogSchema
 {
@@ -34,8 +22,7 @@ public final class CollectionLogSchema
 		return tabs;
 	}
 
-	/** One of the five top-level tabs (Bosses, Raids, Clues, Minigames,
-	 * Other) shown along the top of the in-game collection log. */
+	/** A top-level tab (Bosses, Raids, Clues, Minigames, Other). */
 	public static final class Tab
 	{
 		private final String name;
@@ -58,10 +45,7 @@ public final class CollectionLogSchema
 		}
 	}
 
-	/** One entry in a tab's own left-hand page list (e.g. "Zulrah"
-	 * within the "Bosses" tab) -- itemIds is every item that page can
-	 * ever show, obtained or not, in the same order the in-game log
-	 * itself lists them. */
+	/** A page within a tab (e.g. "Zulrah"). itemIds lists every item the page can show, in in-game order. */
 	public static final class Page
 	{
 		private final String name;

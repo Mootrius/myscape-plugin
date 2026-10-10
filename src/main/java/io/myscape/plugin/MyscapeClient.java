@@ -16,23 +16,14 @@ import okhttp3.RequestBody;
 import okhttp3.Response;
 
 /**
- * Talks to myscape.io's account-linking and item-sync endpoints -- POST
- * /api/link/exchange, GET /api/players/me, and POST
- * /api/players/me/{bank,inventory,equipment,potion-storage} (see app/routers/linking.py
- * and app/main.py in the Mootrius/myscape repo for the server side of
- * this contract). Everything here is async (OkHttp's enqueue/Callback):
- * every caller is a Swing button handler, plugin startup, or a
- * background event handler, and blocking any of those would freeze the
- * client UI.
+ * Client for the myscape.io account-linking and item-sync endpoints.
+ * All calls are asynchronous (OkHttp enqueue) so callers on the client thread
+ * or the Swing event thread are never blocked.
  */
 class MyscapeClient
 {
 	private static final MediaType JSON = MediaType.parse("application/json; charset=utf-8");
 	private static final Gson GSON = new Gson();
-	// The plugin used to expose this as a "API base URL" config setting
-	// (only ever useful for pointing a client at a local dev server
-	// instead of production) -- removed since it was never actually
-	// used that way in practice, so this is just a plain constant now.
 	private static final String API_BASE_URL = "https://myscape.io";
 
 	private final OkHttpClient httpClient;
@@ -45,8 +36,7 @@ class MyscapeClient
 	}
 
 	/** Id, name and quantity of one stored item. Each container has its own
-	 * subclass so one container's snapshot can't be passed to another's
-	 * sync method. */
+	 * subclass so one container's snapshot cannot be passed to another's sync method. */
 	abstract static class StoredItem
 	{
 		final int itemId;
@@ -61,17 +51,7 @@ class MyscapeClient
 		}
 	}
 
-	/** One bank slot's contents -- just enough for the server to know
-	 * what's owned and how many (see BankItem in the Mootrius/myscape
-	 * repo's app/models.py). A *tradeable* item's name/icon/price are
-	 * looked up server-side from the wiki's GE mapping, not sent from
-	 * here -- itemName exists only so an untradeable item (which has no
-	 * entry in that mapping at all) can still be matched by name against
-	 * a gear-setup slot the player typed it into by hand; see BankItem's
-	 * docstring server-side for the full rationale. Always populated
-	 * (see MyscapePlugin's item-reading methods), even though only the
-	 * untradeable case ever actually needs it -- simpler than this
-	 * plugin having to know ahead of time which items are tradeable. */
+	/** One bank slot. Item name is always sent so untradeable items can be matched by name. */
 	static final class BankItem extends StoredItem
 	{
 		BankItem(int itemId, String itemName, int quantity)
@@ -80,10 +60,7 @@ class MyscapeClient
 		}
 	}
 
-	/** Same shape as BankItem, kept as its own type (rather than reusing
-	 * BankItem) so a caller can never accidentally pass one container's
-	 * snapshot to the other's sync method -- see InventoryItem in the
-	 * Mootrius/myscape repo's app/models.py for the server side. */
+	/** One inventory slot. */
 	static final class InventoryItem extends StoredItem
 	{
 		InventoryItem(int itemId, String itemName, int quantity)
@@ -92,11 +69,7 @@ class MyscapeClient
 		}
 	}
 
-	/** One worn equipment slot -- unlike Bank/InventoryItem this also
-	 * carries which slot it's in ("head", "weapon", ..., matching
-	 * EQUIPMENT_SLOTS in the original Maintrius tool this is replacing),
-	 * since equipment is keyed by slot server-side rather than being a
-	 * flat list (see EquipmentItem in app/models.py). */
+	/** One worn equipment item, keyed by slot ("head", "weapon", ...). */
 	static final class EquipmentItem
 	{
 		final String slot;
@@ -113,17 +86,7 @@ class MyscapeClient
 		}
 	}
 
-	/** Same shape as BankItem/InventoryItem again, for the
-	 * Player-Owned-House Potion Storage -- see PotionStorageItem in the
-	 * Mootrius/myscape repo's app/models.py for the server side, and
-	 * MyscapePlugin#readPotionStorageItems for how this is actually
-	 * built (Potion Storage isn't an ItemContainer, so it can't just be
-	 * read the way bank/inventory/equipment are -- it's decomposed from
-	 * each stored potion's total dose count into the same real item ids
-	 * withdrawing it would hand back). This is what replaced the old
-	 * "supplies" gear-slot flag -- a potion sitting in storage can now
-	 * be recognized as genuinely owned instead of needing to be marked
-	 * always-owned by hand. */
+	/** One Potion Storage entry, expanded from total doses into real item ids. */
 	static final class PotionStorageItem extends StoredItem
 	{
 		PotionStorageItem(int itemId, String itemName, int quantity)
@@ -132,20 +95,8 @@ class MyscapeClient
 		}
 	}
 
-	/** Same shape as BankItem/InventoryItem again, for a Rune Pouch's
-	 * contents -- see RunePouchItem in the Mootrius/myscape repo's
-	 * app/models.py for the server side, and
-	 * MyscapePlugin#readRunePouchItems for how this is actually built
-	 * (a Rune Pouch is a single inventory item whose contents RuneLite
-	 * only exposes through varbits/an enum, not an ItemContainer, so --
-	 * same as Potion Storage -- it can't just be read the way
-	 * bank/inventory/equipment are). Deliberately synced through its own
-	 * endpoint rather than folded into InventoryItem's payload: the
-	 * pouch itself is one inventory slot, but its contents can add up to
-	 * several more distinct item entries, and /inventory's sync caps the
-	 * number of distinct entries per request -- routing those through a
-	 * separate endpoint (mirroring Potion Storage) avoids a stocked
-	 * pouch ever pushing an otherwise-normal inventory over that cap. */
+	/** One Rune Pouch entry. Synced separately from the inventory so a stocked pouch
+	 * cannot push the inventory over its per-request item cap. */
 	static final class RunePouchItem extends StoredItem
 	{
 		RunePouchItem(int itemId, String itemName, int quantity)
@@ -154,15 +105,7 @@ class MyscapeClient
 		}
 	}
 
-	/** Same shape as BankItem/InventoryItem again, for a Looting Bag's
-	 * contents -- see LootingBagItem in the Mootrius/myscape repo's
-	 * app/models.py for the server side, and
-	 * MyscapePlugin#readLootingBagItems for how this is actually built.
-	 * Unlike Potion Storage/Rune Pouch above, a Looting Bag genuinely IS
-	 * an ItemContainer (InventoryID.LOOTING_BAG) -- it's read the same
-	 * straightforward way Bank is, only reporting contents once the
-	 * player has actually opened it at least once this session (same
-	 * caveat as Bank). */
+	/** One Looting Bag entry. Contents are only available once the bag has been opened in the session. */
 	static final class LootingBagItem extends StoredItem
 	{
 		LootingBagItem(int itemId, String itemName, int quantity)
@@ -171,14 +114,7 @@ class MyscapeClient
 		}
 	}
 
-	/** Same shape as BankItem/InventoryItem/LootingBagItem again, for
-	 * the Farming Guild Seed Vault's contents -- see SeedVaultItem in
-	 * the Mootrius/myscape repo's app/models.py for the server side, and
-	 * MyscapePlugin#readSeedVaultItems for how this is actually built.
-	 * Same deal as Looting Bag above: a genuine ItemContainer
-	 * (InventoryID.SEED_VAULT), read the same straightforward way, only
-	 * reporting contents once the player has actually opened it at
-	 * least once this session (same caveat as Bank/Looting Bag). */
+	/** One Seed Vault entry. Contents are only available once the vault has been opened in the session. */
 	static final class SeedVaultItem extends StoredItem
 	{
 		SeedVaultItem(int itemId, String itemName, int quantity)
@@ -187,14 +123,7 @@ class MyscapeClient
 		}
 	}
 
-	/** Same shape again, for a Tackle Box's contents -- see
-	 * TackleBoxItem in the Mootrius/myscape repo's app/models.py for the
-	 * server side, and MyscapePlugin#readTackleBoxItems for how this is
-	 * actually built. Same deal as Looting Bag/Seed Vault above: a
-	 * genuine ItemContainer (InventoryID.TACKLE_BOX), read the same
-	 * straightforward way, only reporting contents once the player has
-	 * actually opened it at least once this session (same caveat as
-	 * Bank/Looting Bag/Seed Vault). */
+	/** One Tackle Box entry. Contents are only available once the box has been opened in the session. */
 	static final class TackleBoxItem extends StoredItem
 	{
 		TackleBoxItem(int itemId, String itemName, int quantity)
@@ -203,24 +132,8 @@ class MyscapeClient
 		}
 	}
 
-	/** Same shape as BankItem/InventoryItem/LootingBagItem again, for
-	 * the whole Player-Owned-House Costume Room -- see PohItem in the
-	 * Mootrius/myscape repo's app/models.py for the server side, and
-	 * MyscapePlugin#readPohItems for how this is actually built. Named
-	 * "PoH" (not "Costume Room") since that's the more general house-
-	 * storage bucket Storages Viewer's location filter groups
-	 * this under -- see PohItem's own docstring server-side.
-	 * Originally six separate classes, one per piece of furniture,
-	 * each assumed to back its own ItemContainer
-	 * (InventoryID.POH_COSTUME_ROOM_MAGIC_WARDROBE_INV and friends).
-	 * Live testing showed every piece actually fires
-	 * ItemContainerChanged on the same containerId (33405, not any of
-	 * those named constants) with identical contents regardless of
-	 * which piece was opened -- Jagex's newer, consolidated Costume
-	 * Room interface (InterfaceID.POH_COSTUMES) reads from one unified
-	 * store, not six. Same open-it-once caveat as every other source
-	 * here: contents are only reported once the player has opened the
-	 * Costume Room interface at least once this session. */
+	/** One Player-Owned House Costume Room entry. All furniture pieces report through one
+	 * consolidated container, so the room is synced as a single source. */
 	static final class PohItem extends StoredItem
 	{
 		PohItem(int itemId, String itemName, int quantity)
@@ -229,16 +142,7 @@ class MyscapeClient
 		}
 	}
 
-	/** Same shape again, for the Forestry Kit's contents -- see
-	 * ForestryKitItem in the Mootrius/myscape repo's app/models.py for
-	 * the server side, and MyscapePlugin#readForestryKitItems for how
-	 * this is actually built. A genuine ItemContainer
-	 * (InventoryID.FORESTRY_KIT), read the same straightforward way as
-	 * Tackle Box/Seed Vault above, only reporting contents once the
-	 * player has actually opened it at least once this session (same
-	 * caveat as everywhere else here). Grouped under "PORTABLE" rather
-	 * than "PoH" on Storages Viewer -- it's carried, not house
-	 * storage. */
+	/** One Forestry Kit entry. Contents are only available once the kit has been opened in the session. */
 	static final class ForestryKitItem extends StoredItem
 	{
 		ForestryKitItem(int itemId, String itemName, int quantity)
@@ -247,14 +151,7 @@ class MyscapeClient
 		}
 	}
 
-	/** Same shape again, for a Seed Box's contents -- see SeedBoxItem
-	 * in the Mootrius/myscape repo's app/models.py for the server side
-	 * (distinct from SeedVaultItem above), and
-	 * MyscapePlugin#readSeedBoxItems for how this is actually built. A
-	 * genuine ItemContainer (InventoryID.SEED_BOX), read the same
-	 * straightforward way as Tackle Box/Forestry Kit, only reporting
-	 * contents once the player has actually opened it at least once
-	 * this session. */
+	/** One Seed Box entry. Contents are only available once the box has been opened in the session. */
 	static final class SeedBoxItem extends StoredItem
 	{
 		SeedBoxItem(int itemId, String itemName, int quantity)
@@ -263,17 +160,7 @@ class MyscapeClient
 		}
 	}
 
-	/** Same shape again, for the Master Scroll Book's contents -- see
-	 * MasterScrollBookItem in the Mootrius/myscape repo's app/models.py
-	 * for the server side. Unlike every other source in this file, this
-	 * one isn't backed by a RuneLite ItemContainer at all -- confirmed
-	 * absent by research, then confirmed absent for real by a
-	 * diagnostic that logged every otherwise-unrecognized container id
-	 * for a full play session and caught nothing but unrelated Grand
-	 * Exchange activity. MyscapePlugin#readMasterScrollBookItems reads
-	 * this straight off InterfaceID.BOOKOFSCROLLS' own widgets instead
-	 * -- see that method's own comment for the widget layout a second
-	 * diagnostic found. */
+	/** One Master Scroll Book entry. The book has no item container, so contents are read from its interface widgets. */
 	static final class MasterScrollBookItem extends StoredItem
 	{
 		MasterScrollBookItem(int itemId, String itemName, int quantity)
@@ -282,16 +169,7 @@ class MyscapeClient
 		}
 	}
 
-	/** Same shape again, for a Huntsman's Kit's contents -- see
-	 * HuntsmansKitItem in the Mootrius/myscape repo's app/models.py for
-	 * the server side, and MyscapePlugin#readHuntsmansKitItems for how
-	 * this is actually built. A genuine ItemContainer
-	 * (InventoryID.HUNTSMANS_KIT), read the same straightforward way as
-	 * Tackle Box/Forestry Kit/Seed Box, only reporting contents once the
-	 * player has actually opened it at least once this session (and,
-	 * since this is one of the "virtual storage" sources, now also once
-	 * it's confirmed empty on that first open -- see
-	 * MyscapePlugin#pendingContainerRereadTicks for that fix). */
+	/** One Huntsman's Kit entry. Contents are only available once the kit has been opened in the session. */
 	static final class HuntsmansKitItem extends StoredItem
 	{
 		HuntsmansKitItem(int itemId, String itemName, int quantity)
@@ -300,20 +178,7 @@ class MyscapeClient
 		}
 	}
 
-	/** Same shape again, for one boat's Cargo Hold contents -- see
-	 * BoatCargoItem in the Mootrius/myscape repo's app/models.py for the
-	 * server side. Deliberately carries no `slot` field: which of a
-	 * player's up to five boats this came from is a property of the
-	 * *sync call* (see syncBoatCargo below), not of the item data itself
-	 * -- the server-side table is what actually needs a slot column,
-	 * since (unlike PoH's furniture, which is identical no matter which
-	 * house it's in) each boat's cargo hold is genuinely independent
-	 * contents. A genuine ItemContainer
-	 * (InventoryID.SAILING_BOAT_1_CARGOHOLD..SAILING_BOAT_5_CARGOHOLD,
-	 * one per boat slot), read the same straightforward way as the other
-	 * virtual storages -- see MyscapePlugin#readBoatCargoItems and
-	 * #pendingContainerRereadTicks for the empty-on-first-open fix this
-	 * source also needed. */
+	/** One Cargo Hold entry. The boat slot is passed to the sync call rather than stored per item. */
 	static final class BoatCargoItem extends StoredItem
 	{
 		BoatCargoItem(int itemId, String itemName, int quantity)
@@ -322,17 +187,8 @@ class MyscapeClient
 		}
 	}
 
-	/** One skill's current level+xp -- see Player.skills' docstring in
-	 * the Mootrius/myscape repo's app/models.py for the server side, and
-	 * MyscapePlugin#readSkills for how this is actually built. `skill`
-	 * is always the lowercase RuneLite enum name (e.g. "attack",
-	 * "sailing"), matching SKILL_NAMES in app/mindmaps.py exactly since
-	 * both sides ultimately derive from the same 24-entry set of real
-	 * OSRS skills -- see readSkills' own comment for why this plugin
-	 * never has to hardcode that list itself. `level` is the player's
-	 * REAL (unboosted) level, not whatever a potion currently has it
-	 * boosted to -- a boost is transient and shouldn't make a goal
-	 * flicker complete and then incomplete again a few minutes later. */
+	/** One skill's level and xp. The skill name is the lowercase RuneLite enum name and
+	 * the level is the real (unboosted) level. */
 	static final class SkillItem
 	{
 		final String skill;
@@ -347,14 +203,7 @@ class MyscapeClient
 		}
 	}
 
-	/** One achievement diary area's highest completed tier -- see
-	 * Player.diary_tiers' docstring in the Mootrius/myscape repo's
-	 * app/models.py for the server side, and
-	 * MyscapePlugin#readDiaryTiers for how this is actually built. Only
-	 * ever sent for an area with at least Easy complete -- an area
-	 * with nothing done yet is simply left out of the list, the same
-	 * way the server itself only ever stores one current tier per area
-	 * (see that same docstring). */
+	/** The highest completed tier for one achievement diary area. Areas with nothing completed are omitted. */
 	static final class DiaryTierItem
 	{
 		final String area;
@@ -367,17 +216,7 @@ class MyscapeClient
 		}
 	}
 
-	/** One collection log item the player has obtained, and its
-	 * quantity -- see GameAccount.collection_log_items' own docstring
-	 * in the Mootrius/myscape repo's app/models.py for the server
-	 * side, and CollectionLogItemCapture (io.myscape.plugin.
-	 * collectionlog) for how this is actually captured at all (unlike
-	 * SkillItem/DiaryTierItem above, it isn't cache data -- the
-	 * collection log widget has to actually be opened in-game). No
-	 * itemName field, unlike BankItem/InventoryItem/etc above: every
-	 * collection log item id is a real, permanent, already-known id
-	 * (see app/collectionlog.py server-side), so there's no
-	 * untradeable-item-name-matching role for one to play here. */
+	/** One obtained collection log item and its quantity. Captured while the collection log is open in game. */
 	static final class CollectionLogItem
 	{
 		final int itemId;
@@ -390,34 +229,9 @@ class MyscapeClient
 		}
 	}
 
-	/** The seven Character Summary stats shown on the "Character Summary"
-	 * tab of the quest journal's Account Summary sidepanel. Originally
-	 * this was ONLY ever readable while that specific tab was open in-
-	 * game (see MyscapePlugin#readCharacterSummary), since none of the
-	 * seven had a varbit/varp of their own to react to independently --
-	 * unlike SkillItem/DiaryTierItem above, which always did. That's no
-	 * longer true across the board: combatLevel/totalLevel/totalXp are
-	 * now also kept live off the very same skill reads SkillItem's own
-	 * sync already does (see MyscapePlugin#patchCombatAndTotalStats),
-	 * questsCompleted/questsTotal off RuneLite's own Quest enum (see
-	 * patchQuestStats), achievementsCompleted/achievementsTotal off the
-	 * same 48 diary varbits DiaryTierItem's own sync already reads (see
-	 * patchDiaryStats), combatTasksCompleted off six combat-achievement-
-	 * tier varbits (see patchCombatAchievementStats -- combatTasksTotal
-	 * is the one field left panel-only, since there's no equivalent
-	 * "how many combat tasks exist in total" varbit), and
-	 * collectionsCompleted/collectionsTotal off two collection log varps
-	 * (see patchCollectionStats). readCharacterSummary and its panel-
-	 * open trigger (characterSummaryRereadTicksLeft) still exist and
-	 * still work exactly as before -- they're now the periodic "silent
-	 * correction" pass that resyncs the full seven-stat baseline (and is
-	 * still the ONLY way any of this gets populated for the very first
-	 * time each session -- see patchCharacterSummary's own doc), rather
-	 * than the only way any of these seven numbers ever update at all.
-	 *
-	 * questsCompleted/questsTotal ("183/184" on the panel) stands in for
-	 * quest points -- the panel doesn't surface a raw QP number, only
-	 * this completion count. */
+	/** Character Summary stats. Most fields are kept current from skill, quest, diary,
+	 * combat achievement and collection log reads. A periodic Character Summary read
+	 * corrects the baseline. Quest counts stand in for quest points. */
 	static final class CharacterSummaryItem
 	{
 		final double combatLevel;
@@ -431,30 +245,10 @@ class MyscapeClient
 		final int combatTasksTotal;
 		final int collectionsCompleted;
 		final int collectionsTotal;
-		// Easy/Medium/Hard/Elite/Master/Grandmaster completed-task
-		// counts, in that order (same order as MyscapePlugin's own
-		// COMBAT_ACHIEVEMENT_COMPLETED_VARBITS, which this is read
-		// from -- see patchCombatAchievementStats) -- combatTasksCompleted
-		// above is just these six summed, kept for backward
-		// compatibility with the aggregate stat the Character Summary
-		// panel itself shows. No equivalent per-tier total array: like
-		// combatTasksTotal above, each tier's total task count is fixed
-		// game content the server already knows, not something synced
-		// live from here.
+		// Completed task counts for Easy through Grandmaster, in that order.
+		// combatTasksCompleted is the sum of these.
 		final int[] combatTaskTierCompleted;
-		// One of "MAIN"/"IRONMAN"/"UIM"/"HCIM"/"GIM"/"HCGIM"/"UGIM" --
-		// see MyscapePlugin#readAccountType for where this actually
-		// comes from (client.getVarbitValue(Varbits.ACCOUNT_TYPE), not
-		// this panel at all) and GameAccount.account_type's own comment
-		// in the Mootrius/myscape repo's app/models.py for what it's
-		// used for server-side. A String (not one of the primitive
-		// fields above) since, unlike those, this one has a real
-		// "unknown" state worth preserving as null rather than
-		// defaulting to a specific value -- readAccountType itself
-		// never actually returns null, though (it falls back to
-		// "MAIN"), so in practice this is only ever null if some
-		// future caller builds a CharacterSummaryItem without reading
-		// it at all.
+		// "MAIN", "IRONMAN", "UIM", "HCIM", "GIM", "HCGIM" or "UGIM".
 		final String accountType;
 
 		CharacterSummaryItem(
@@ -482,12 +276,7 @@ class MyscapeClient
 		}
 	}
 
-	/** One item from a single loot event (a kill, a clue casket, a
-	 * pickpocket) -- see LootEvent's docstring in the Mootrius/myscape
-	 * repo's app/models.py for the server side. Unlike BankItem and
-	 * friends above, this isn't part of a "current state" snapshot --
-	 * see LootEvent below, and MyscapePlugin#onLootReceived for how
-	 * this is actually built. */
+	/** One item from a single loot event. Loot is an append-only record, not a state snapshot. */
 	static final class LootEventItem
 	{
 		final int itemId;
@@ -502,17 +291,9 @@ class MyscapeClient
 		}
 	}
 
-	/** One kill/casket/pickpocket's worth of loot -- see LootEvent's
-	 * docstring in the Mootrius/myscape repo's app/models.py for the
-	 * full rationale (this is an append-only historical record, not a
-	 * snapshot the server deletes-and-replaces the way every other
-	 * synced source above is). eventId is generated once, the moment
-	 * the drop happens (see MyscapePlugin#onLootReceived), specifically
-	 * so a retried or duplicated sync of the same event is safe instead
-	 * of double-counted server-side. combatLevel is null for anything
-	 * without one (clue caskets, pickpocket targets) -- RuneLite's own
-	 * LootReceived event reports -1 in that case; see onLootReceived for
-	 * where that's translated to null. */
+	/** One kill, clue casket or pickpocket worth of loot. eventId is generated when the drop
+	 * happens so a retried sync is not double counted. combatLevel is null when the
+	 * source has no combat level. */
 	static final class LootEvent
 	{
 		final String eventId;
@@ -552,10 +333,7 @@ class MyscapeClient
 		void onFailure(String message);
 	}
 
-	/** Shared by every item-sync method (bank/inventory/equipment/potion
-	 * storage) -- all four POST an {"items": [...]} body and get back
-	 * the same {"item_count": N} shape, so one callback interface covers
-	 * all of them rather than four identical ones. */
+	/** Shared by the item sync methods. The server replies with {"item_count": N}. */
 	interface SyncCallback
 	{
 		void onSuccess(int itemCount);
@@ -569,11 +347,7 @@ class MyscapeClient
 	{
 		JsonObject body = new JsonObject();
 		body.addProperty("code", code);
-		// account_hash is naturally an unsigned 64-bit value and can
-		// exceed Long.MAX_VALUE -- toUnsignedString avoids that coming
-		// out as a negative number, which would silently produce a
-		// *different* (and wrong) string than the same account would
-		// ever produce again.
+		// Account hash is unsigned 64-bit; format it unsigned so it never turns negative.
 		body.addProperty("account_hash", Long.toUnsignedString(accountHash));
 		if (runescapeName != null)
 		{
@@ -654,9 +428,7 @@ class MyscapeClient
 				{
 					if (r.code() == 401)
 					{
-						// The key was revoked server-side (or never valid) --
-						// clear it locally too, rather than leaving the panel
-						// stuck claiming "linked" forever.
+						// Key was revoked server-side. Clear it locally as well.
 						clearStoredLink();
 						callback.onNotLinked();
 						return;
@@ -681,21 +453,15 @@ class MyscapeClient
 		});
 	}
 
-	/** Calls the server to actually revoke the link (POST
-	 * /api/players/me/unlink -- see app/main.py in the Mootrius/myscape
-	 * repo), which is what clears account_hash there and brings the
-	 * website's link banner back. Only clears the locally stored
-	 * credential once the server confirms it, rather than forgetting it
-	 * unconditionally: if this call fails (network down, say) and the
-	 * plugin pretended it was unlinked anyway, the forgotten key would
-	 * still be perfectly valid server-side, which is exactly the kind of
-	 * silently-still-linked state this exists to avoid. */
+	/** Revokes the link on the server (POST /api/players/me/unlink). The stored credential
+	 * is only cleared once the server confirms, so a failed call does not leave a
+	 * still-valid key forgotten locally. */
 	void unlink(UnlinkCallback callback)
 	{
 		String apiKey = configManager.getConfiguration(MyscapeConfig.GROUP, MyscapeConfig.API_KEY_KEY);
 		if (apiKey == null || apiKey.isEmpty())
 		{
-			// Nothing stored to revoke -- already effectively unlinked.
+			// Nothing stored to revoke.
 			clearStoredLink();
 			callback.onSuccess();
 			return;
@@ -722,9 +488,7 @@ class MyscapeClient
 				{
 					if (r.code() == 401)
 					{
-						// The key was already invalid (revoked/expired) --
-						// there's nothing left to revoke server-side, so
-						// this still counts as a successful unlink.
+						// Key already invalid, so there is nothing left to revoke.
 						clearStoredLink();
 						callback.onSuccess();
 						return;
@@ -746,27 +510,20 @@ class MyscapeClient
 		});
 	}
 
-	/** Sends the current full bank snapshot to myscape.io (POST
-	 * /api/players/me/bank -- see app/main.py in the Mootrius/myscape
-	 * repo), for the Purchase Goals feature to compare against. Always a
-	 * full replace server-side, never a merge -- see that endpoint's
-	 * docstring -- so this should always be called with *everything*
-	 * currently in the bank, not just what changed. */
+	/** Replaces the full bank snapshot on the server (POST /api/players/me/bank).
+	 * Always pass the complete bank contents. */
 	void syncBank(List<BankItem> items, SyncCallback callback)
 	{
 		syncStorage("/api/players/me/bank", items, callback);
 	}
 
-	/** Same deal as syncBank, for the main 28-slot inventory (POST
-	 * /api/players/me/inventory). */
+	/** Replaces the inventory on the server (POST /api/players/me/inventory). */
 	void syncInventory(List<InventoryItem> items, SyncCallback callback)
 	{
 		syncStorage("/api/players/me/inventory", items, callback);
 	}
 
-	/** Same deal as syncBank, for worn equipment (POST
-	 * /api/players/me/equipment) -- each item also carries its slot,
-	 * since equipment is keyed by slot server-side, not a flat list. */
+	/** Replaces worn equipment on the server (POST /api/players/me/equipment). */
 	void syncEquipment(List<EquipmentItem> items, SyncCallback callback)
 	{
 		JsonArray itemsJson = new JsonArray();
@@ -782,103 +539,74 @@ class MyscapeClient
 		syncItems("/api/players/me/equipment", itemsJson, callback);
 	}
 
-	/** Same deal as syncBank, for Potion Storage (POST
-	 * /api/players/me/potion-storage). */
+	/** Replaces Potion Storage on the server (POST /api/players/me/potion-storage). */
 	void syncPotionStorage(List<PotionStorageItem> items, SyncCallback callback)
 	{
 		syncStorage("/api/players/me/potion-storage", items, callback);
 	}
 
-	/** Same deal as syncBank, for a Rune Pouch's contents (POST
-	 * /api/players/me/rune-pouch). */
+	/** Replaces Rune Pouch contents on the server (POST /api/players/me/rune-pouch). */
 	void syncRunePouch(List<RunePouchItem> items, SyncCallback callback)
 	{
 		syncStorage("/api/players/me/rune-pouch", items, callback);
 	}
 
-	/** Same deal as syncBank, for a Looting Bag's contents (POST
-	 * /api/players/me/looting-bag). */
+	/** Replaces Looting Bag contents on the server (POST /api/players/me/looting-bag). */
 	void syncLootingBag(List<LootingBagItem> items, SyncCallback callback)
 	{
 		syncStorage("/api/players/me/looting-bag", items, callback);
 	}
 
-	/** Same deal as syncBank, for the Seed Vault's contents (POST
-	 * /api/players/me/seed-vault). */
+	/** Replaces Seed Vault contents on the server (POST /api/players/me/seed-vault). */
 	void syncSeedVault(List<SeedVaultItem> items, SyncCallback callback)
 	{
 		syncStorage("/api/players/me/seed-vault", items, callback);
 	}
 
-	/** Same deal as syncBank, for a Tackle Box's contents (POST
-	 * /api/players/me/tackle-box). */
+	/** Replaces Tackle Box contents on the server (POST /api/players/me/tackle-box). */
 	void syncTackleBox(List<TackleBoxItem> items, SyncCallback callback)
 	{
 		syncStorage("/api/players/me/tackle-box", items, callback);
 	}
 
-	/** Same deal as syncBank, for the whole PoH Costume Room's contents
-	 * (POST /api/players/me/poh) -- one endpoint covering all six
-	 * pieces of furniture, not six separate ones (see PohItem's own
-	 * comment above for why). Path is "/poh", not "/costume-room" --
-	 * see PohItem's comment for why this is named PoH rather than
-	 * Costume Room. */
+	/** Replaces the Costume Room contents on the server (POST /api/players/me/poh). */
 	void syncPoh(List<PohItem> items, SyncCallback callback)
 	{
 		syncStorage("/api/players/me/poh", items, callback);
 	}
 
-	/** Same deal as syncBank, for the Forestry Kit's contents (POST
-	 * /api/players/me/forestry-kit). */
+	/** Replaces Forestry Kit contents on the server (POST /api/players/me/forestry-kit). */
 	void syncForestryKit(List<ForestryKitItem> items, SyncCallback callback)
 	{
 		syncStorage("/api/players/me/forestry-kit", items, callback);
 	}
 
-	/** Same deal as syncBank, for a Seed Box's contents (POST
-	 * /api/players/me/seed-box). */
+	/** Replaces Seed Box contents on the server (POST /api/players/me/seed-box). */
 	void syncSeedBox(List<SeedBoxItem> items, SyncCallback callback)
 	{
 		syncStorage("/api/players/me/seed-box", items, callback);
 	}
 
-	/** Same deal as syncBank, for the Master Scroll Book's contents
-	 * (POST /api/players/me/master-scroll-book) -- see
-	 * MasterScrollBookItem's own comment above for how these are read,
-	 * unlike every other source here. */
+	/** Replaces Master Scroll Book contents on the server (POST /api/players/me/master-scroll-book). */
 	void syncMasterScrollBook(List<MasterScrollBookItem> items, SyncCallback callback)
 	{
 		syncStorage("/api/players/me/master-scroll-book", items, callback);
 	}
 
-	/** Same deal as syncBank, for a Huntsman's Kit's contents (POST
-	 * /api/players/me/huntsmans-kit). */
+	/** Replaces Huntsman's Kit contents on the server (POST /api/players/me/huntsmans-kit). */
 	void syncHuntsmansKit(List<HuntsmansKitItem> items, SyncCallback callback)
 	{
 		syncStorage("/api/players/me/huntsmans-kit", items, callback);
 	}
 
-	/** Same deal as syncBank, for ONE boat's Cargo Hold contents (POST
-	 * /api/players/me/boat-cargo/{slot}) -- `slot` (1-5, one of a
-	 * player's up to five independently-named boats, see BoatCargoItem's
-	 * own comment above for why) is part of the URL path itself, matching
-	 * the server-side endpoint exactly (see app/main.py's sync_boat_cargo
-	 * in the Mootrius/myscape repo): the request body is just this slot's
-	 * own items, same shape as every other syncX call here, so the
-	 * server only ever deletes and replaces that one slot's rows rather
-	 * than risking wiping out the other four boats' already-known cargo. */
+	/** Replaces one boat's Cargo Hold contents (POST /api/players/me/boat-cargo/{slot}).
+	 * The slot (1-5) is part of the path, so only that boat's rows are replaced. */
 	void syncBoatCargo(int slot, List<BoatCargoItem> items, SyncCallback callback)
 	{
 		syncStorage("/api/players/me/boat-cargo/" + slot, items, callback);
 	}
 
-	/** Sends the player's current level+xp in every skill the plugin has
-	 * read at least once this session (POST /api/players/me/skills --
-	 * see app/main.py in the Mootrius/myscape repo). Always a full
-	 * replace server-side, same as syncBank and friends above -- but
-	 * unlike those, this is never a *partial* snapshot in practice
-	 * either, since MyscapePlugin reads every one of Skill.values() in
-	 * one pass (see readSkills), not just whichever skill just changed. */
+	/** Replaces the skill levels and xp on the server (POST /api/players/me/skills). */
 	void syncSkills(List<SkillItem> skills, SyncCallback callback)
 	{
 		JsonArray skillsJson = new JsonArray();
@@ -895,13 +623,9 @@ class MyscapeClient
 		syncPayload("/api/players/me/skills", body, "skill_count", callback);
 	}
 
-	/** Reports the logged-in character's current display name (POST
-	 * /api/players/me/runescape-name -- see app/main.py in the
-	 * Mootrius/myscape repo) so an in-game name change shows up on the
-	 * website without re-linking. accountHash goes along so the server
-	 * only ever renames the character this API key is actually linked
-	 * to. callback's int is 1 if the stored name changed, 0 if it was
-	 * already current. */
+	/** Reports the character's current display name (POST /api/players/me/runescape-name).
+	 * The account hash restricts the rename to the linked character. The callback receives
+	 * 1 if the stored name changed, otherwise 0. */
 	void syncRunescapeName(long accountHash, String runescapeName, SyncCallback callback)
 	{
 		JsonObject body = new JsonObject();
@@ -910,14 +634,8 @@ class MyscapeClient
 		syncPayload("/api/players/me/runescape-name", body, "updated", callback);
 	}
 
-	/** Sends the player's full completed quest/miniquest list (POST
-	 * /api/players/me/quests -- see app/main.py in the Mootrius/myscape
-	 * repo) -- every net.runelite.api.Quest this client thread has seen
-	 * report QuestState.FINISHED (see MyscapePlugin#readCompletedQuests),
-	 * by name, exactly as RuneLite itself names it; matched
-	 * case-insensitively against a blue goal node's chosen quest
-	 * server-side, so this doesn't need to normalize anything itself.
-	 * Always a full replace, like every other current-state sync here. */
+	/** Replaces the completed and in-progress quest lists on the server
+	 * (POST /api/players/me/quests). Names are sent as RuneLite reports them. */
 	void syncQuests(List<String> completedQuestNames, List<String> inProgressQuestNames, SyncCallback callback)
 	{
 		JsonArray questsJson = new JsonArray();
@@ -932,24 +650,13 @@ class MyscapeClient
 		}
 		JsonObject body = new JsonObject();
 		body.add("completed_quests", questsJson);
-		// New alongside completed_quests, not replacing it -- every
-		// quest/miniquest QuestState.IN_PROGRESS has seen this session
-		// (see MyscapePlugin#readInProgressQuestNames), for Character
-		// Overview's quest list section's yellow ("started but not
-		// finished") state. A quest in neither list reads as red ("not
-		// started") server-side, not as an unsynced-vs-not-started
-		// ambiguity -- same full-replace-on-every-sync semantics as
-        // completed_quests already has.
+		// Quests in neither list are treated as not started.
 		body.add("in_progress_quests", inProgressJson);
 		syncPayload("/api/players/me/quests", body, "quest_count", callback);
 	}
 
-	/** Sends the player's highest completed tier per achievement diary
-	 * area (POST /api/players/me/diaries -- see app/main.py in the
-	 * Mootrius/myscape repo) -- see MyscapePlugin#readDiaryTiers for how
-	 * this is actually computed from RuneLite's own per-tier "complete"
-	 * varbits. Always a full replace, like every other current-state
-	 * sync here. */
+	/** Replaces the highest completed diary tier per area on the server
+	 * (POST /api/players/me/diaries). */
 	void syncDiaries(List<DiaryTierItem> diaryTiers, SyncCallback callback)
 	{
 		JsonArray diariesJson = new JsonArray();
@@ -965,14 +672,8 @@ class MyscapeClient
 		syncPayload("/api/players/me/diaries", body, "area_count", callback);
 	}
 
-	/** Sends every collection log item the player has obtained, and its
-	 * quantity (POST /api/players/me/collection-log -- see app/main.py
-	 * in the Mootrius/myscape repo) -- see CollectionLogItem's own doc
-	 * above for how this is actually captured. Always a full replace,
-	 * like every other current-state sync here -- the plugin always
-	 * hands over its complete accumulated snapshot (see
-	 * CollectionLogItemCapture#snapshotCapturedItems), never just
-	 * whatever changed since the last sync. */
+	/** Replaces the obtained collection log items on the server
+	 * (POST /api/players/me/collection-log). Always pass the full captured snapshot. */
 	void syncCollectionLogItems(List<CollectionLogItem> items, SyncCallback callback)
 	{
 		JsonArray itemsJson = new JsonArray();
@@ -986,15 +687,8 @@ class MyscapeClient
 		syncItems("/api/players/me/collection-log", itemsJson, callback);
 	}
 
-	/** Sends the seven Character Summary stats (POST
-	 * /api/players/me/character-summary -- see app/main.py in the
-	 * Mootrius/myscape repo) -- see MyscapePlugin#readCharacterSummary
-	 * for how these are actually read off the in-game panel. Unlike
-	 * every other sync* method above, this always sends exactly one
-	 * object rather than a list (there's only ever one "current"
-	 * summary), so the server's response field this reads back is a
-	 * fixed stat_count rather than a count of items actually sent --
-	 * see that endpoint's own comment for why. */
+	/** Sends the Character Summary stats as a single object (POST
+	 * /api/players/me/character-summary). The callback receives a fixed stat count. */
 	void syncCharacterSummary(CharacterSummaryItem summary, SyncCallback callback)
 	{
 		JsonObject body = new JsonObject();
@@ -1009,10 +703,7 @@ class MyscapeClient
 		body.addProperty("combat_tasks_total", summary.combatTasksTotal);
 		body.addProperty("collections_completed", summary.collectionsCompleted);
 		body.addProperty("collections_total", summary.collectionsTotal);
-		// Keyed by tier name rather than sent as a bare array -- self-
-		// documenting on the wire, and matches syncDiaries' own
-		// area-keyed shape below rather than relying on the six tiers'
-		// array order being implicitly understood server-side too.
+		// Keyed by tier name so the wire format does not depend on array order.
 		String[] tierNames = {"easy", "medium", "hard", "elite", "master", "grandmaster"};
 		JsonObject tierJson = new JsonObject();
 		for (int i = 0; i < tierNames.length && i < summary.combatTaskTierCompleted.length; i++)
@@ -1020,37 +711,15 @@ class MyscapeClient
 			tierJson.addProperty(tierNames[i], summary.combatTaskTierCompleted[i]);
 		}
 		body.add("combat_task_tier_completed", tierJson);
-		// Nullable (see CharacterSummaryItem.accountType's own doc
-		// above) -- Gson's addProperty(String, String) already handles
-		// a null value correctly (serializes it as a JSON null), which
-		// is exactly what the server's own Optional[str] = None field
-		// expects from an older build that predates this one, so no
-		// extra null check is needed here.
+		// Gson serializes a null account type as JSON null, which the server accepts.
 		body.addProperty("account_type", summary.accountType);
 		syncPayload("/api/players/me/character-summary", body, "stat_count", callback);
 	}
 
-	/** Sends the local player's current 3D model -- captured by
-	 * MyscapePlugin#captureCharacterModel from RuneLite's own
-	 * Renderable#getModel() and converted to a .glb file by
-	 * io.myscape.plugin.modelexport's ModelExporter -- to myscape.io
-	 * (POST /api/players/me/character-model, see app/main.py in the
-	 * Mootrius/myscape repo) for Character Overview's 3D viewer. Sent
-	 * base64-encoded inside a plain JSON body, like every other sync*
-	 * method here, rather than as a raw multipart/octet-stream upload,
-	 * so this reuses syncPayload's shared request/response handling
-	 * instead of a bespoke binary-upload code path -- a captured
-	 * player model is small enough (a single composited mesh, typically
-	 * well under a megabyte) that base64's ~33% overhead isn't worth
-	 * avoiding that way. Full replace, same as every other
-	 * "current state" sync -- there's only ever one current model per
-	 * account, not a history of captures.
-	 *
-	 * callback's int is byte_count -- the server's own count of the
-	 * bytes it decoded and stored, so this doubles as a transit-
-	 * integrity check (did the whole file actually arrive?) rather
-	 * than an item count in the sense every other sync* method's
-	 * callback reports. */
+	/** Replaces the character's 3D model on the server (POST
+	 * /api/players/me/character-model). The .glb file is sent base64-encoded in a JSON body
+	 * so it can share the common request handling. The callback receives the byte count
+	 * the server decoded, which serves as a transfer integrity check. */
 	void syncCharacterModel(byte[] glb, SyncCallback callback)
 	{
 		JsonObject body = new JsonObject();
@@ -1058,17 +727,9 @@ class MyscapeClient
 		syncPayload("/api/players/me/character-model", body, "byte_count", callback);
 	}
 
-	/** Sends one loot event to myscape.io (POST /api/players/me/loot --
-	 * see app/main.py in the Mootrius/myscape repo) the moment it
-	 * happens, rather than being folded into the shared debounced sync
-	 * the other five sync* methods above go through -- see LootEvent's
-	 * docstring in the Mootrius/myscape repo's app/models.py for why
-	 * this endpoint's request/response shape ({"events": [...]} in,
-	 * {"added_count": N} out) is different enough from syncItems' shared
-	 * {"items": [...]}/{"item_count": N} contract that it isn't reused
-	 * here. callback's int is added_count (0 if the server already had
-	 * this event on file -- a normal outcome on a retry, not a failure;
-	 * see MyscapePlugin#onLootReceived), not a running total. */
+	/** Sends one loot event immediately (POST /api/players/me/loot). This appends rather than
+	 * replaces, and uses its own {"events": [...]} body. The callback receives added_count,
+	 * which is 0 when the server already has the event. */
 	void syncLootEvent(LootEvent event, SyncCallback callback)
 	{
 		String apiKey = configManager.getConfiguration(MyscapeConfig.GROUP, MyscapeConfig.API_KEY_KEY);
@@ -1144,27 +805,9 @@ class MyscapeClient
 		});
 	}
 
-	/** Sends one live kill-count reading straight from the chatbox to
-	 * myscape.io (POST /api/players/me/kill-counts -- see app/main.py
-	 * and app/hiscores.py::apply_kill_count_updates in the
-	 * Mootrius/myscape repo) the moment
-	 * MyscapePlugin#onChatMessage parses one out. Unlike syncLootEvent
-	 * above, this reuses syncPayload below rather than building its
-	 * own request/response handling inline -- {"updates": [...]} in,
-	 * {"applied_count": N} out fits syncPayload's generic contract
-	 * exactly (same as syncQuests/syncDiaries above), so there's
-	 * nothing bespoke enough here to justify not sharing it.
-	 *
-	 * bossName is sent exactly as RuneLite's own chatbox worded it
-	 * (see KILLCOUNT_PATTERN's own comment in MyscapePlugin); any
-	 * renaming happens server-side, so this plugin carries no name
-	 * table of its own. An unrecognized name is silently dropped
-	 * server-side rather than surfaced as a failure here -- there's
-	 * nothing for this callback to distinguish, same as a loot event
-	 * the server already had on file. callback's int is
-	 * applied_count (0 or 1, never a running total) -- SyncCallback is
-	 * reused here purely because the shape matches, same as every
-	 * other sync method above. */
+	/** Sends one kill-count reading parsed from chat (POST /api/players/me/kill-counts).
+	 * The boss name is sent as shown in chat and resolved server-side. The callback receives
+	 * applied_count, which is 0 or 1. */
 	void syncKillCountUpdate(String bossName, int killCount, SyncCallback callback)
 	{
 		JsonObject updateJson = new JsonObject();
@@ -1179,15 +822,9 @@ class MyscapeClient
 		syncPayload("/api/players/me/kill-counts", body, "applied_count", callback);
 	}
 
-	/** Marks ONE collection log item obtained, by the name the game
-	 * itself printed in its "New item added to your collection log:
-	 * <name>" chat line -- see MyscapePlugin#onChatMessage. The server
-	 * resolves the name to the log's own item id (and silently ignores
-	 * one it can't resolve unambiguously -- the next full in-game
-	 * collection log capture picks it up instead), then ADDS it to what
-	 * it already has rather than replacing anything. callback's int is
-	 * applied_count (0 or 1) -- SyncCallback is reused purely because
-	 * the shape matches, same as syncKillCountUpdate above. */
+	/** Adds one item to the collection log by the name shown in the in-game chat message
+	 * (POST /api/players/me/collection-log/item). Adds rather than replaces. The callback
+	 * receives applied_count, which is 0 or 1. */
 	void syncCollectionLogItemAdded(String itemName, SyncCallback callback)
 	{
 		JsonObject body = new JsonObject();
@@ -1210,13 +847,7 @@ class MyscapeClient
 		syncItems(path, itemsJson, callback);
 	}
 
-	/** Shared by every "current state" container sync above (syncBank,
-	 * syncInventory, syncEquipment, syncPotionStorage, syncRunePouch,
-	 * syncLootingBag, syncSeedVault, syncTackleBox, syncPoh,
-	 * syncForestryKit, syncSeedBox, syncMasterScrollBook, ...)
-	 * -- each POSTs an {"items": [...]} body to its own path and gets
-	 * back the same {"item_count": N} response, so this just wraps the
-	 * general syncPayload below with that one fixed field name. */
+	/** Wraps syncPayload for container syncs that POST {"items": [...]} and read item_count. */
 	private void syncItems(String path, JsonArray itemsJson, SyncCallback callback)
 	{
 		JsonObject body = new JsonObject();
@@ -1224,21 +855,9 @@ class MyscapeClient
 		syncPayload(path, body, "item_count", callback);
 	}
 
-	/** Shared by every "current state" sync above -- syncItems (and
-	 * through it, bank/inventory/equipment/potion storage/rune pouch),
-	 * plus syncSkills/syncQuests/syncDiaries directly, since those three
-	 * don't share the {"items": [...]} envelope but do share everything
-	 * else about the request/response shape: POST `body` as-is to
-	 * `path`, and read the response's `countField` back out as the
-	 * count this sync's callback reports.
-	 *
-	 * Silently does nothing if not currently linked: there's no key to
-	 * authenticate with, and more importantly nothing to attribute the
-	 * snapshot to, so there's no failure worth surfacing to the player
-	 * here the way there is for an explicit action like linking or
-	 * unlinking -- these run automatically in the background every time
-	 * the relevant state changes, whether or not the player has gotten
-	 * around to linking yet. */
+	/** Common request handling for the sync methods. POSTs the body to the path and reports
+	 * the integer in countField. Does nothing when not linked, since these run in the
+	 * background without user action. */
 	private void syncPayload(String path, JsonObject body, String countField, SyncCallback callback)
 	{
 		String apiKey = configManager.getConfiguration(MyscapeConfig.GROUP, MyscapeConfig.API_KEY_KEY);
@@ -1268,9 +887,7 @@ class MyscapeClient
 				{
 					if (r.code() == 401)
 					{
-						// Key was revoked server-side since we last checked --
-						// same handling as #refreshLinkStatus, so the plugin
-						// doesn't keep quietly retrying with a dead key.
+						// Key was revoked server-side. Clear it so the plugin stops retrying.
 						clearStoredLink();
 						callback.onFailure("No longer linked to myscape.io.");
 						return;
@@ -1292,10 +909,7 @@ class MyscapeClient
 		});
 	}
 
-	/** Clears the locally stored credential -- called once #unlink has
-	 * confirmed the server-side revocation succeeded (or found there was
-	 * nothing to revoke), and also when the server tells us during a
-	 * status check that the stored key is no longer valid. */
+	/** Clears the stored credential. */
 	void clearStoredLink()
 	{
 		configManager.unsetConfiguration(MyscapeConfig.GROUP, MyscapeConfig.API_KEY_KEY);

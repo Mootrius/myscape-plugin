@@ -9,18 +9,13 @@ public interface MyscapeConfig extends Config
 {
 	String GROUP = "myscape";
 
-	// Keys the plugin stores directly via ConfigManager once linking
-	// succeeds (see MyscapeClient) -- deliberately not @ConfigItem
-	// fields, since they're not something a player should ever type or
-	// see rendered back in the config panel. The side panel's
-	// Link/Unlink flow is the only thing that ever sets or clears them.
+	// Stored directly via ConfigManager after linking. Not @ConfigItem fields,
+	// so they never appear in the config panel.
 	String API_KEY_KEY = "apiKey";
 	String PLAYER_ID_KEY = "playerId";
 	String RUNESCAPE_NAME_KEY = "runescapeName";
 
-	// Used directly by name ("showSidebar") in MyscapePlugin#onConfigChanged
-	// rather than referenced as a constant from there -- see that
-	// method's own comment for why a plain string match is fine here.
+	// Referenced by name in MyscapePlugin#onConfigChanged.
 	@ConfigItem(
 		keyName = "showSidebar",
 		name = "Show sidebar",

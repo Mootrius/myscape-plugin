@@ -5,70 +5,17 @@ import java.util.Map;
 import net.runelite.api.Model;
 
 /**
- * Converts a live {@code net.runelite.api.Model} -- the same composited
- * mesh (base skeleton + every equipped item's own geometry + current
- * animation pose, all already baked together by the game engine's own
- * rendering pipeline) that {@code Renderable#getModel()} hands back for
- * the local player or their follower -- into a {@link MeshData} ready
- * for {@link GlbWriter} to serialize as a real glTF/GLB file. No
- * screenshot involved anywhere in this: every number here is read
- * straight out of the client's own in-memory triangle data via
- * RuneLite's public Model API, the same inputs the game's own
- * (software or GPU) renderer already consumes to put this exact model
- * on screen -- see HslColor's own doc for why its color math is a
- * direct port of the client's own GPU shader rather than a generic HSL
- * formula, for the same "match the game exactly" reason.
+ * Converts a live {@code net.runelite.api.Model} (the composited mesh from
+ * {@code Renderable#getModel()}) into a {@link MeshData} for {@link GlbWriter}. All data is read from
+ * the client's in-memory triangle arrays through RuneLite's public Model API.
  *
- * This approach -- reading the client's raw runtime mesh and
- * re-packaging it as a portable glTF file, rather than screenshotting
- * the player -- is the same one the (BSD-2-licensed, open source)
- * RuneProfile plugin uses for its own player-model feature; this class
- * is an independent implementation written directly against RuneLite's
- * public API and its own GPU shader source (see HslColor), not a copy
- * of RuneProfile's code, but it exists because reading how RuneProfile
- * described its own approach (its README, its repo's own file layout)
- * made clear this was possible and roughly how, before any of this was
- * written -- worth keeping in mind if this ever needs comparing back
- * against how they did it.
+ * <p>The approach of re-packaging the runtime mesh as glTF is the one used by the RuneProfile plugin
+ * (BSD-2-Clause); this is an independent implementation.
  *
- * <p><b>Render priority/bias:</b> a real OSRS face also carries a
- * render priority and a "bias" (see
- * {@code Model#getFaceRenderPriorities}/{@code getFaceBias}), which the
- * live client uses -- instead of relying on z-buffering alone -- to
- * resolve draw order for overlapping/near-coplanar faces (the classic
- * case being a cape or amulet modeled flush against the body, where
- * true 3D depth is ambiguous or intentionally coincident and the game
- * depends on this explicit ordering rather than depth to show the
- * right thing on top). This builder still leaves both out of the
- * per-vertex dedup key below (unlike RuneProfile's own documented
- * approach, which keeps them as per-vertex data without letting them
- * force a new primitive) -- untested against a real model where two
- * faces actually share a position/color/UV but differ only in
- * priority/bias, which in practice is rare enough that leaving it out
- * remains a reasonable place to cut scope rather than a reasonable
- * place to introduce a bug. Priority/bias ARE now folded into the
- * PRIMITIVE-splitting key a few lines below, though -- a separate,
- * coarser use: each (textureId, priority, bias, translucent) triangle
- * group becomes its own glTF primitive carrying that priority/bias as
- * {@code extras} (see GlbWriter), so the character-overview viewer can
- * reproduce the game's own draw-order override via {@code
- * THREE.Object3D#renderOrder} instead of trusting raw depth alone for
- * faces the game itself never trusted to raw depth either.
- *
- * <p><b>Confidence note on UVs:</b> the geometry/color/transparency
- * handling below is verified directly against RuneLite's own
- * Model/Mesh interface signatures and its own hsl_to_rgb.glsl (see
- * HslColor). The UV projection in {@link #computeFaceUv} is this
- * class's own from-first-principles implementation of the documented
- * "texture reference triangle" technique (a face's UV comes from
- * expressing its own vertex positions in the basis of a separate
- * reference triangle's two edges) -- mathematically sound and the
- * standard approach for this exact problem, but NOT yet checked
- * against a real captured model's actual on-screen texturing (this
- * environment has no live game client to compare against). Treat UVs
- * as the one part of this class that still needs a real in-game
- * before/after comparison before shipping, even though the rest is
- * solid.
+ * <p>Render priority and bias are not part of the per-vertex dedup key. They are part of the primitive
+ * key: each (textureId, priority, bias, translucent) group becomes its own primitive carrying
+ * priority/bias as {@code extras}, so a viewer can reproduce the game's draw-order override for
+ * near-coplanar faces such as capes.
  */
 final class ModelMeshBuilder
 {
@@ -76,45 +23,20 @@ final class ModelMeshBuilder
 	{
 	}
 
-	/** RuneLite's own coordinate convention (matching the game engine
-	 * it wraps) is X east, Y down, Z north; glTF is right-handed with Y
-	 * up. Negating Y and Z is a 180-degree rotation about the X axis
-	 * (not a mirror -- a mirror would need an odd number of sign flips
-	 * and would reverse every triangle's winding, silently flipping
-	 * every face to point the wrong way), so triangle winding from the
-	 * source model carries over unchanged and needs no special-casing
-	 * below. */
+	/**
+	 * RuneLite uses X east, Y down, Z north; glTF is right-handed with Y up. Negating Y and Z is a
+	 * 180-degree rotation about X, not a mirror, so triangle winding is preserved.
+	 */
 	private static final float[] AXIS_SIGNS = {1f, -1f, -1f};
 
-	/** A third-corner face color of -1 means flat shading: the whole
-	 * triangle is meant to use corner 1's own color rather than one
-	 * color per corner (confirmed against RuneProfile's own published
-	 * ModelMeshBuilder, which documents the identical OSRS convention
-	 * independently). Reading -1 here as if it were a real packed-HSL
-	 * value instead of substituting corner 1's color produces a wrong
-	 * (near-white, fully saturated -- see {@link #HIDDEN_FACE}'s own
-	 * doc for exactly why) color for that one corner, smearing a
-	 * visible gradient across what should be a uniformly flat-shaded
-	 * triangle. */
+	/** Third-corner color -1 means flat shading: the whole triangle uses corner 1's color. */
 	private static final int FLAT_SHADED = -1;
 
-	/** A third-corner face color of -2 is a DIFFERENT sentinel from
-	 * {@link #FLAT_SHADED}: it means the game never draws this face at
-	 * all, not "use some other color for it." Both -1 and -2 happen to
-	 * decode, via this class's own packed-HSL bit layout (hue = high 6
-	 * bits, sat = next 3, lightness = low 7 -- see HslColor's own doc),
-	 * to hue 63/saturation 7/lightness 126-127: a fully saturated,
-	 * nearly maximum-lightness color, which is close enough to white
-	 * that it reads as a plain bright/white artifact regardless of
-	 * which sentinel produced it. Treating -2 as a real color (as this
-	 * class used to, before this fix) silently draws a face the game
-	 * itself never shows, as a stray near-white triangle sitting on top
-	 * of the model -- exactly the "triangular artifact... right on the
-	 * back at the top of the cape" a real capture showed on a fire
-	 * cape. This is the same bug RuneProfile's own exporter documents
-	 * hitting on an inferno cape, and the same fix: skip any face whose
-	 * third color is this sentinel entirely, before it ever reaches the
-	 * vertex buffer, rather than trying to color it at all. */
+	/**
+	 * Third-corner color -2 means the game never draws the face. Both -1 and -2 decode as
+	 * near-white packed HSL, so treating -2 as a color draws a stray white triangle (seen on fire and
+	 * inferno capes). Such faces are skipped.
+	 */
 	private static final int HIDDEN_FACE = -2;
 
 	static MeshData build(Model model)
@@ -155,9 +77,7 @@ final class ModelMeshBuilder
 			mesh.uvs = new java.util.ArrayList<>();
 		}
 
-		// One Primitive per (textureId, translucent) pair actually seen,
-		// created lazily and reused -- see MeshData.Primitive's own doc
-		// for why those two are the only things that split a primitive.
+		// One primitive per (textureId, priority, bias, translucent) key, created lazily.
 		Map<Long, MeshData.Primitive> primitivesByKey = new HashMap<>();
 
 		int faceCount = model.getFaceCount();
@@ -165,20 +85,14 @@ final class ModelMeshBuilder
 		{
 			if (c3[face] == HIDDEN_FACE)
 			{
-				// The game never draws this face -- see HIDDEN_FACE's own
-				// doc. Skip it before it ever reaches the vertex buffer,
-				// same treatment as a fully-transparent face just below,
-				// rather than assigning it any color at all.
+				// Never drawn by the game; see HIDDEN_FACE.
 				continue;
 			}
 
 			int transparency = transparencies != null ? (transparencies[face] & 0xFF) : 0;
 			if (transparency == 255)
 			{
-				// Fully transparent -- the client itself never draws this
-				// face at all (see RuneProfile's own documented test for
-				// this exact case), so it contributes nothing to the
-				// exported mesh either.
+				// Fully transparent faces are never drawn by the client.
 				continue;
 			}
 			boolean translucent = transparency > 0;
@@ -195,10 +109,8 @@ final class ModelMeshBuilder
 			int priority = priorities != null ? (priorities[face] & 0xFF) : 0;
 			int bias = biases != null ? (biases[face] & 0xFF) : 0;
 
-			// textureId+1 needs 17 bits (textureId is masked to 0xFFFF, so
-			// +1 can reach 65536); priority and bias are each already
-			// masked to a single byte above, so 8 bits apiece is exactly
-			// enough and nothing here can collide with another face's key.
+			// Pack the key into a long: textureId + 1 needs 17 bits (up to 65536); priority and bias
+			// are one byte each.
 			long key = ((long) (textureId + 1) << 17) | ((long) priority << 9) | ((long) bias << 1) | (translucent ? 1 : 0);
 			MeshData.Primitive primitive = primitivesByKey.get(key);
 			if (primitive == null)
@@ -229,11 +141,7 @@ final class ModelMeshBuilder
 				uvC = computeFaceUv(origin, uEnd, vEnd, vx[c], vy[c], vz[c]);
 			}
 
-			// A flat-shaded face (see FLAT_SHADED's own doc) uses corner
-			// 1's own color for corners 2 and 3 too, rather than their
-			// raw c2[face]/c3[face] values -- for corner 3 specifically,
-			// FLAT_SHADED (-1) is itself a sentinel, not a real color,
-			// same category of value as HIDDEN_FACE just handled above.
+			// Flat-shaded faces use corner 1's color for all corners; see FLAT_SHADED.
 			boolean flatShaded = c3[face] == FLAT_SHADED;
 			int color2 = flatShaded ? c1[face] : c2[face];
 			int color3 = flatShaded ? c1[face] : c3[face];
@@ -261,20 +169,10 @@ final class ModelMeshBuilder
 	}
 
 	/**
-	 * The "texture reference triangle" projection: OSRS doesn't store a
-	 * UV per vertex the way most modern model formats do. Instead, each
-	 * textured face points at a reference triangle (origin, uEnd, vEnd
-	 * -- three of the model's own vertex positions) that defines where
-	 * the texture's (0,0)-(1,0)-(0,1) corners sit in 3D; a face's own
-	 * vertex's UV is just that vertex's position re-expressed in the
-	 * 2D basis those two edges (uEnd-origin, vEnd-origin) form. Solved
-	 * here via the standard cross-product projection for a point onto
-	 * a triangle's own basis (equivalent to inverting the 2x2 system
-	 * [e1 e2] * [s t]^T = f, done through cross products instead of a
-	 * literal matrix inverse so it stays well-defined even when the
-	 * point isn't exactly coplanar with the reference triangle, which
-	 * in practice a face's own vertices usually are, but floating-point
-	 * noise or a non-planar reference triangle shouldn't hard-fail on).
+	 * Texture reference triangle projection. OSRS stores no per-vertex UVs: each textured face points
+	 * at a reference triangle (origin, uEnd, vEnd) whose edges span the texture's (0,0)-(1,0)-(0,1)
+	 * corners. A vertex's UV is its position expressed in the basis of those two edges. Uses cross
+	 * products rather than a matrix inverse so points slightly off the triangle's plane still work.
 	 */
 	private static float[] computeFaceUv(float[] origin, float[] uEnd, float[] vEnd, float px, float py, float pz)
 	{
@@ -286,10 +184,7 @@ final class ModelMeshBuilder
 		float nDotN = dot(n, n);
 		if (nDotN < 1e-12f)
 		{
-			// Degenerate reference triangle (its own three vertices are
-			// collinear or coincident) -- no meaningful projection
-			// exists. Not expected from real game data; (0,0) is a
-			// harmless fallback rather than a divide-by-zero.
+			// Degenerate reference triangle: fall back to (0,0).
 			return new float[]{0f, 0f};
 		}
 
@@ -318,15 +213,9 @@ final class ModelMeshBuilder
 	}
 
 	/**
-	 * Deduplicates face corners into glTF vertices, keyed on the
-	 * (position, color+alpha, uv) tuple that would actually make two
-	 * corners indistinguishable in the exported mesh -- NOT on the
-	 * source Model's own vertex index, since two faces sharing a raw
-	 * model vertex can still shade it differently (a hard edge), which
-	 * must stay two separate glTF vertices to render correctly. See
-	 * this class's own top-of-file doc for why priority/bias are left
-	 * out of this key (a deliberate, flagged simplification) despite
-	 * RuneProfile's own documented approach including them.
+	 * Deduplicates face corners into glTF vertices keyed on (position, color+alpha, uv). The source
+	 * vertex index is not used: faces sharing a model vertex may shade it differently (hard edge)
+	 * and need separate glTF vertices.
 	 */
 	private static final class VertexBuffer
 	{

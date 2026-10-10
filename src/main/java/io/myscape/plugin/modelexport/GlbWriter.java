@@ -12,59 +12,20 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * Serializes a {@link MeshData} into a real binary glTF (.glb) file --
- * the same container (a JSON chunk describing the scene/accessors, plus
- * one binary buffer chunk holding the actual vertex/index/image bytes,
- * per the glTF 2.0 core spec) that RuneProfile's own plugin produces and
- * that @react-three/fiber / three.js load directly, no server-side
- * conversion step needed. Written by hand against the bare glTF 2.0
- * spec (the format's small enough, and a RuneLite plugin already pulls
- * in Gson via the client -- see {@code MyscapeClient}'s own usage --
- * so no new dependency is needed just to emit some JSON) rather than
- * adapted from any existing glTF-authoring library or from
- * RuneProfile's own (unseen) source; the JSON shape itself is just
- * standard glTF, not anything RuneProfile-specific.
+ * Serializes a {@link MeshData} into a binary glTF 2.0 (.glb) file: a JSON chunk plus one binary
+ * chunk holding vertex, index and image bytes. The JSON is built with Gson, with no glTF library.
  *
- * <p><b>Texture images:</b> a caller that supplies real PNG bytes per
- * texture id (see {@link #write(MeshData, Map)}, and
- * {@link TextureExtractor} for how those bytes get pulled off a live
- * client) gets those images embedded as real glTF {@code images}/
- * {@code textures} and referenced from each textured primitive's own
- * material as {@code baseColorTexture} -- {@code baseColorFactor}
- * stays white and every vertex's own COLOR_0 (from
- * {@link ModelMeshBuilder}, still just the lightness multiplier {@link
- * HslColor#textureLightnessToRgb} baked in) keeps doing exactly the
- * multiplicative shading it always has, since glTF defines COLOR_0,
- * when present, as multiplied into the sampled base color same as it
- * multiplies into baseColorFactor -- true of the core metallic-
- * roughness model and unchanged by KHR_materials_unlit, which only
- * removes the lighting equation, not that modulation. A primitive
- * whose texture id has no corresponding entry in the supplied map (no
- * caller-supplied bytes at all -- see {@link #write(MeshData)} -- or
- * {@link TextureExtractor} couldn't extract that particular one) falls
- * back to the previous flat-vertex-color-only material rather than
- * failing the whole export.
+ * <p>Textures: PNG bytes supplied per texture id (see {@link TextureExtractor}) are embedded as
+ * {@code images}/{@code textures} and referenced as {@code baseColorTexture}. {@code baseColorFactor}
+ * stays white and COLOR_0 (the lightness multiplier from {@link HslColor#textureLightnessToRgb})
+ * modulates the sampled color, which glTF defines and KHR_materials_unlit does not change. A
+ * primitive with no PNG falls back to a vertex-color-only material.
  *
- * <p><b>Render priority/bias:</b> each primitive also carries its own
- * OSRS render priority/bias (see MeshData.Primitive's own doc) as a
- * glTF {@code extras} object -- glTF/three.js have no native concept
- * of OSRS's own priority-based draw ordering, so this class doesn't
- * try to resolve it into anything itself; it just carries the raw data
- * through for the character-overview viewer's own JS to turn into a
- * {@code THREE.Object3D#renderOrder} after load (see that page's own
- * comment for why -- in short, OSRS relies on this explicit ordering,
- * not depth alone, for exactly the flush-against-the-body gear -- a
- * cape, an amulet -- that a naive z-buffered render can otherwise show
- * wrong).
+ * <p>Render priority/bias: each primitive carries OSRS priority and bias as glTF {@code extras}.
+ * Neither glTF nor three.js has an equivalent, so a viewer can map them to a render order.
  *
- * <p>Materials use the KHR_materials_unlit extension deliberately:
- * OSRS's own lighting is already fully baked into each face's HSL
- * color by the game engine itself (see HslColor's own doc), so a
- * physically-based renderer's own extra directional/ambient lighting
- * on top of that would double-light the model and wash out its real
- * shading. Unlit tells a compliant viewer (three.js's GLTFLoader
- * included) to render (COLOR_0 * baseColorTexture) * baseColorFactor
- * as-is instead.
+ * <p>Materials use KHR_materials_unlit because the game already bakes lighting into each face's HSL
+ * color, and extra scene lighting would double-light the model.
  */
 final class GlbWriter
 {
@@ -86,32 +47,23 @@ final class GlbWriter
 	private static final int TARGET_ARRAY_BUFFER = 34962;
 	private static final int TARGET_ELEMENT_ARRAY_BUFFER = 34963;
 
-	// glTF sampler enums (WebGL/OpenGL's own texture-filter/wrap
-	// constants, reused as-is by the glTF spec).
+	// glTF sampler enums (WebGL/OpenGL constants).
 	private static final int FILTER_NEAREST = 9728;
 	private static final int WRAP_REPEAT = 10497;
 
 	private static final Gson GSON = new Gson();
 
-	/** Writes {@code mesh} with every material untextured, same as
-	 * before this class could embed real texture images at all -- see
-	 * {@link #write(MeshData, Map)}'s own doc for why that overload is
-	 * preferred whenever the caller actually has texture pixel data
-	 * (e.g. a real client capture, as opposed to a synthetic test
-	 * mesh). */
+	/** Writes {@code mesh} with untextured materials. */
 	static byte[] write(MeshData mesh)
 	{
 		return write(mesh, Collections.emptyMap());
 	}
 
 	/**
-	 * @param texturePngs PNG bytes per OSRS texture id (see
-	 *                    {@link TextureExtractor#extractPngs}), used to
-	 *                    embed real {@code baseColorTexture} images for
-	 *                    any primitive whose own texture id has an
-	 *                    entry here. Pass {@link Collections#emptyMap()}
-	 *                    (or use {@link #write(MeshData)}) for the old,
-	 *                    flat-vertex-color-only behavior.
+	 * Writes {@code mesh}, embedding textures where available.
+	 *
+	 * @param texturePngs PNG bytes per OSRS texture id (see {@link TextureExtractor#extractPngs});
+	 *                    primitives without an entry use vertex-color-only materials
 	 */
 	static byte[] write(MeshData mesh, Map<Integer, byte[]> texturePngs)
 	{
@@ -123,12 +75,7 @@ final class GlbWriter
 		int colorAccessor = writeVec4Accessor(mesh.colors, bin, bufferViews, accessors);
 		Integer uvAccessor = mesh.uvs != null ? writeVec2Accessor(mesh.uvs, bin, bufferViews, accessors) : null;
 
-		// glTF's unsigned-short index type can only address 65535
-		// distinct vertices; a model with more needs the wider (and
-		// larger-per-index) unsigned-int type instead. A real OSRS
-		// player+gear model is nowhere near this in practice, but
-		// picking correctly rather than assuming keeps this from
-		// silently corrupting a large model's indices.
+		// Unsigned-short indices address at most 65535 vertices; larger meshes need unsigned int.
 		boolean useIntIndices = mesh.positions.size() > 65535;
 
 		JsonArray primitivesJson = new JsonArray();
@@ -138,19 +85,14 @@ final class GlbWriter
 		JsonArray imagesJson = new JsonArray();
 		JsonArray samplersJson = new JsonArray();
 		JsonArray texturesJson = new JsonArray();
-		// OSRS texture id -> glTF `textures` array index, so the same
-		// texture referenced by several primitives (e.g. the same cloth
-		// pattern on both sleeves) is only embedded once.
+		// OSRS texture id -> glTF `textures` index, so a texture shared by primitives is embedded once.
 		Map<Integer, Integer> glTfTextureIndexByTextureId = new LinkedHashMap<>();
 
 		for (MeshData.Primitive primitive : mesh.primitives)
 		{
 			if (primitive.indices.isEmpty())
 			{
-				// Can happen if every face that would have fed this
-				// primitive was fully transparent and dropped by
-				// ModelMeshBuilder -- an empty glTF primitive is invalid,
-				// so skip it rather than emit one.
+				// An empty primitive is invalid glTF (all its faces were dropped), so skip it.
 				continue;
 			}
 
@@ -199,32 +141,10 @@ final class GlbWriter
 			primitiveJson.addProperty("indices", indicesAccessor);
 			primitiveJson.addProperty("material", materialIndex);
 			primitiveJson.addProperty("mode", 4); // TRIANGLES
-			// OSRS's own render priority/bias for this primitive's own
-			// faces (see MeshData.Primitive's own doc) -- an ordinary
-			// object under glTF's spec-legal "extras" mechanism, not a
-			// bare number, since three.js's GLTFLoader only copies extras
-			// into userData when they're an object (confirmed against its
-			// own assignExtrasToUserData, which otherwise just warns and
-			// drops it). The character-overview viewer reads this back
-			// off each primitive's own geometry.userData to set
-			// THREE.Object3D#renderOrder -- see pages.py's own comment.
-			//
-			// missingTexture: true exactly when this primitive WANTED a
-			// texture (textureId >= 0) but texturePngs has no PNG bytes
-			// for it -- TextureExtractor couldn't pull that one id off
-			// the live client for whatever reason (see its own doc for
-			// the "skip, don't fail the capture" contract). Without this
-			// flag such a primitive is visually indistinguishable from a
-			// deliberately plain one: it falls back to COLOR_0 alone,
-			// which for a textured face is only ever
-			// HslColor#textureLightnessToRgb's lightness-only value (a
-			// real captured model's texture data carries no hue/
-			// saturation of its own -- the pattern lives entirely in the
-			// missing image), so it renders as a flat, oddly bright
-			// near-white/gray patch that reads as a rendering bug even
-			// though it's really a missing-asset fallback working exactly
-			// as designed. The viewer uses this to dim that patch instead
-			// of leaving it looking broken -- see pages.py's own comment.
+			// Priority/bias go in an extras object because three.js GLTFLoader copies extras to
+			// userData only when they are an object.
+			// missingTexture marks a primitive that wanted a texture the extractor could not
+			// supply. It would otherwise render as a flat bright patch, so the viewer dims it.
 			boolean missingTexture = primitive.textureId >= 0 && !texturePngs.containsKey(primitive.textureId);
 			JsonObject extras = new JsonObject();
 			extras.addProperty("osrsPriority", primitive.priority);
@@ -298,10 +218,7 @@ final class GlbWriter
 		pbr.addProperty("roughnessFactor", 1.0f);
 		if (glTfTextureIndex != null)
 		{
-			// See this class's own top-of-file doc for why
-			// baseColorFactor staying white and COLOR_0's own
-			// modulation need no change here -- this is purely an
-			// additional reference, not a replacement for either.
+			// Added alongside baseColorFactor and COLOR_0; see class doc.
 			JsonObject baseColorTexture = new JsonObject();
 			baseColorTexture.addProperty("index", glTfTextureIndex);
 			baseColorTexture.addProperty("texCoord", 0);
@@ -311,9 +228,7 @@ final class GlbWriter
 		JsonObject material = new JsonObject();
 		material.add("pbrMetallicRoughness", pbr);
 		material.addProperty("alphaMode", translucent ? "BLEND" : "OPAQUE");
-		// OSRS's own renderer draws both sides of most thin gear/cloth
-		// geometry; without this a real captured model would show
-		// missing back-faces from some camera angles.
+		// OSRS draws both sides of thin gear and cloth geometry.
 		material.addProperty("doubleSided", true);
 
 		JsonObject unlit = new JsonObject();
@@ -324,14 +239,10 @@ final class GlbWriter
 		return material;
 	}
 
-	/** One sampler, shared by every embedded texture -- OSRS's own
-	 * renderer samples textures with nearest-neighbor filtering, not
-	 * smoothed/bilinear (see the GPU plugin's own GL_NEAREST choice for
-	 * both min/mag filters, confirmed from its real source), so
-	 * matching that here keeps a captured model's texture detail crisp
-	 * instead of blurring it. Repeat wrap on both axes since a face's
-	 * own UV (see ModelMeshBuilder's own "texture reference triangle"
-	 * doc) isn't guaranteed to stay inside 0..1 for a tiled pattern. */
+	/**
+	 * One sampler shared by all textures. Nearest filtering matches the game's GPU plugin and keeps
+	 * texture detail crisp. Repeat wrap because UVs can fall outside 0..1 for tiled patterns.
+	 */
 	private static JsonObject buildSampler()
 	{
 		JsonObject sampler = new JsonObject();
@@ -363,9 +274,7 @@ final class GlbWriter
 		accessor.addProperty("componentType", COMPONENT_TYPE_FLOAT);
 		accessor.addProperty("count", vectors.size());
 		accessor.addProperty("type", "VEC3");
-		// Required by the glTF spec specifically for the accessor
-		// backing a POSITION attribute (a compliant viewer uses it to
-		// frame/cull without decoding every vertex first).
+		// glTF requires min/max on the POSITION accessor.
 		accessor.add("min", floatArray(min[0], min[1], min[2]));
 		accessor.add("max", floatArray(max[0], max[1], max[2]));
 		int accessorIndex = accessors.size();
@@ -454,9 +363,7 @@ final class GlbWriter
 		return accessorIndex;
 	}
 
-	/** Embeds one already-encoded PNG's bytes into the binary chunk and
-	 * points a new glTF {@code images} entry at them. Returns that
-	 * entry's index. */
+	/** Embeds PNG bytes in the binary chunk and adds an {@code images} entry. Returns its index. */
 	private static int writeImage(byte[] pngBytes, BinaryBuffer bin, JsonArray bufferViews, JsonArray imagesJson)
 	{
 		bin.align4();
@@ -485,12 +392,7 @@ final class GlbWriter
 		return bufferView;
 	}
 
-	/** Same as {@link #buildBufferView} but with no {@code target} --
-	 * the glTF spec's bufferView.target enum only covers the vertex/
-	 * index buffer roles ({@code ARRAY_BUFFER}/{@code
-	 * ELEMENT_ARRAY_BUFFER}); an image bufferView is neither of those
-	 * and should omit target entirely rather than pick one that doesn't
-	 * really apply. */
+	/** Like {@link #buildBufferView} but without {@code target}, which applies only to vertex and index buffers. */
 	private static JsonObject buildImageBufferView(int byteOffset, int byteLength)
 	{
 		JsonObject bufferView = new JsonObject();
@@ -510,13 +412,9 @@ final class GlbWriter
 	}
 
 	/**
-	 * Packs a JSON chunk and a binary chunk into one .glb file per the
-	 * glTF 2.0 container spec: a 12-byte header (magic, version, total
-	 * length), then each chunk as its own (length, type, data) header
-	 * -- the JSON chunk's data padded with ASCII spaces (0x20) and the
-	 * binary chunk's with zero bytes, each to a 4-byte boundary, exactly
-	 * as the spec requires so every chunk (and the whole file) stays
-	 * 4-byte aligned.
+	 * Packs the chunks into a .glb: a 12-byte header (magic, version, total length), then each chunk as
+	 * (length, type, data). Chunks are padded to 4-byte boundaries: JSON with spaces (0x20), binary
+	 * with zeros, as the spec requires.
 	 */
 	private static byte[] assembleGlb(byte[] json, byte[] bin)
 	{
@@ -560,13 +458,7 @@ final class GlbWriter
 		return padded;
 	}
 
-	/** A little-endian byte accumulator for the GLB binary chunk --
-	 * plain {@link ByteArrayOutputStream} doesn't expose an endianness
-	 * choice, and every multi-byte value glTF's binary buffer holds
-	 * (float32 positions/colors/uvs, uint16/uint32 indices) is defined
-	 * by the spec as little-endian. Raw image bytes (PNG) have no
-	 * endianness of their own and are just copied through as-is by
-	 * {@link #writeBytes}. */
+	/** Little-endian byte accumulator for the GLB binary chunk (glTF buffers are little-endian). */
 	private static final class BinaryBuffer
 	{
 		private final ByteArrayOutputStream out = new ByteArrayOutputStream();

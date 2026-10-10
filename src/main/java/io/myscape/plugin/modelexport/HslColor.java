@@ -1,61 +1,19 @@
 package io.myscape.plugin.modelexport;
 
 /**
- * Converts OSRS's own packed-HSL face colors (what
- * {@code net.runelite.api.Model#getFaceColors1/2/3} actually return)
- * into linear 0..1 RGB, so ModelMeshBuilder can bake them straight
- * into glTF vertex colors instead of exporting the raw packed ints and
- * leaving every viewer to reimplement OSRS's own color model itself.
+ * Converts OSRS packed-HSL face colors (from {@code Model#getFaceColors1/2/3}) to linear 0..1 RGB
+ * for glTF vertex colors.
  *
- * This is a direct line-for-line port of RuneLite's own hslToRgb GLSL
- * shader (net/runelite/client/plugins/gpu/hsl_to_rgb.glsl, bundled in
- * the runelite-client jar this plugin already depends on) -- that
- * shader is what the GPU plugin actually runs on every face color to
- * put it on screen, so matching it exactly (rather than a generic HSL
- * formula found elsewhere) is what makes an exported model's colors
- * actually match how the game itself renders that same model, packed-
- * value quirks included. Confirmed against the real shader source
- * rather than assumed from OSRS's general reputation for using packed
- * HSL -- see this plugin's own commit message for the extraction.
+ * <p>The HSL conversion is a port of RuneLite's {@code hslToRgb} shader
+ * (net/runelite/client/plugins/gpu/hsl_to_rgb.glsl), so exported colors match how the game renders.
  *
- * The packed format itself (confirmed by the shader's own divisors):
- * a 16-bit value, hue in the high 6 bits (0..63), saturation in the
- * next 3 (0..7), lightness in the low 7 (0..127) -- i.e.
- * {@code (hue << 10) | (sat << 7) | lightness}. A textured face's own
- * "color" ints are NOT a full packed HSL value at all despite coming
- * from the same getFaceColors1/2/3 arrays -- OSRS reuses just the low
- * 7 bits (the lightness channel) as a straight 0..127 brightness
- * multiplier against that face's texture, with hue/saturation
- * meaningless noise above it for a textured face (see
- * ModelMeshBuilder#build's own textured-vs-untextured branch, and
- * RuneProfile's own documented test: "textured face lightness 127
- * expands to white"). textureLightnessToRgb below is that multiplier
- * path; toLinearRgb is the untextured, full-HSL path.
+ * <p>Packed format: 16 bits, {@code (hue << 10) | (sat << 7) | lightness}, with hue 0..63,
+ * saturation 0..7 and lightness 0..127. For textured faces only the low 7 bits are meaningful: they
+ * act as a 0..127 brightness multiplier on the texture (127 expands to white).
  *
- * <p><b>Color space (fixed after a real in-game comparison showed the
- * exported model too washed out/low-contrast):</b> the client's own
- * shader output this class ports (the {@code pow(., brightness)} step
- * below) is the FINAL, already display-ready pixel value -- the same
- * bytes the game itself puts on screen, not scene-linear light. glTF's
- * COLOR_0 accessor, however, is defined by spec as linear, and a
- * conformant viewer (confirmed directly against three.js's own
- * GLTFLoader source: it warns about converting vertex colors *from*
- * "srgb-linear" -- i.e. it takes COLOR_0 as already linear on faith --
- * then applies its own standard linear-to-sRGB encode for display.
- * Handing it an already display-space value under that assumption
- * double-encodes it: the renderer's own encode lifts an already-lifted
- * value a second time, crushing contrast and washing out shadows
- * exactly the way the real client's screenshot didn't. Both
- * toLinearRgb and textureLightnessToRgb below now run their result
- * through {@link #srgbToLinear}, the standard sRGB decode, specifically
- * so the SAME value survives that later re-encode unchanged (encode(
- * decode(x)) == x for the standard sRGB transfer function) -- i.e. this
- * converts "the pixel value the game would show" into "the linear
- * value a spec-correct renderer needs to reproduce that same pixel."
- * embedded baseColorTexture images need no equivalent change: those
- * are ordinary sRGB-encoded image bytes (standard PNG pixel data,
- * same as any authored texture asset), which three.js already decodes
- * correctly on its own via its texture's default sRGB color space.
+ * <p>Color space: the shader output is display-ready sRGB, but glTF COLOR_0 is defined as linear and
+ * viewers apply their own sRGB encode. Results are therefore passed through {@link #srgbToLinear} so
+ * the displayed pixel matches the game. Embedded textures are ordinary sRGB images and need no change.
  */
 final class HslColor
 {
@@ -63,29 +21,14 @@ final class HslColor
 	{
 	}
 
-	/**
-	 * The client's own default TextureProvider#getBrightness() --
-	 * 0.8, the OSRS client's standard brightness setting (its slider's
-	 * middle/default position) unless a player has actually changed
-	 * it. ModelMeshBuilder takes this as a parameter rather than
-	 * hardcoding it in this class specifically so a real capture
-	 * (which has a live TextureProvider to ask) doesn't silently
-	 * ignore a player's own brightness setting, while a synthetic test
-	 * (see ModelMeshBuilderTest) can just use this default without
-	 * needing to fake a whole TextureProvider for it.
-	 */
+	/** Default {@code TextureProvider#getBrightness()}. Callers pass the live value when available. */
 	static final double DEFAULT_BRIGHTNESS = 0.8;
 
-	/** Untextured faces: hsl is the full packed value described above.
-	 * Mirrors hslToRgb(vec3 hsl) in hsl_to_rgb.glsl exactly, including
-	 * its own variable names in this class's own comments below, so a
-	 * side-by-side diff against the real shader is easy for whoever
-	 * checks this later. Returns {r, g, b}, each already
-	 * gamma-corrected by brightness (pow(., brightness) in the
-	 * shader) -- NOT sRGB-encoded on top of that; glTF's own
-	 * COLOR_0 accessor is defined as linear, and a correct glTF
-	 * viewer applies its own display transform on top, same as it
-	 * would for any other glTF file. */
+	/**
+	 * Untextured faces: converts a full packed HSL value. Mirrors {@code hslToRgb} in
+	 * hsl_to_rgb.glsl, keeping its variable names for easy comparison. Returns {r, g, b}
+	 * gamma-corrected by brightness, then decoded from sRGB to linear.
+	 */
 	static float[] toLinearRgb(int hsl, double brightness)
 	{
 		double hue = (hsl >> 10 & 0x3F) / 64.0 + 0.0078125;
@@ -122,11 +65,7 @@ final class HslColor
 		};
 	}
 
-	/** Shared by all three channels in toLinearRgb above -- the shader
-	 * repeats this same six-way piecewise formula three times (once per
-	 * channel, each with its own hue-like input: var23 for red, the
-	 * bare hue for green, var27 for blue), so it's factored out here
-	 * rather than tripled. */
+	/** The shader's piecewise hue formula, shared by all three channels (red: var23, green: hue, blue: var27). */
 	private static double channel(double h, double var19, double var21)
 	{
 		if (6.0 * h < 1.0)
@@ -144,14 +83,10 @@ final class HslColor
 		return var21;
 	}
 
-	/** Textured faces: hsl's low 7 bits are a straight 0..127
-	 * brightness multiplier (see this class's own top-of-file doc for
-	 * why) -- 127 (the OSRS engine's own "fully lit" constant) maps to
-	 * {1, 1, 1} (multiplying a texture's own texel by white leaves it
-	 * unchanged), matching RuneProfile's own documented test case for
-	 * this exact conversion. brightness's pow() still applies on top,
-	 * same as the untextured path, since it's a display-wide gamma
-	 * correction rather than something specific to hue/saturation. */
+	/**
+	 * Textured faces: the low 7 bits are a 0..127 brightness multiplier. 127 (fully lit) maps to
+	 * white, leaving the texture unchanged. The brightness gamma applies as for untextured faces.
+	 */
 	static float[] textureLightnessToRgb(int hsl, double brightness)
 	{
 		float lightness = clamp01((hsl & 0x7F) / 127.0f);
@@ -172,12 +107,7 @@ final class HslColor
 		return (float) v;
 	}
 
-	/** The standard sRGB EOTF (the "decode to linear" direction) --
-	 * exactly the piecewise curve the glTF spec itself specifies for
-	 * this purpose, and what three.js's own internal SRGBToLinear does
-	 * on the other side. See this class's own top-of-file doc for why
-	 * every color this class returns is passed through this before
-	 * going into a glTF file's COLOR_0. */
+	/** Standard piecewise sRGB-to-linear decode. See the class doc for why it is applied. */
 	private static float srgbToLinear(float c)
 	{
 		if (c <= 0.04045f)

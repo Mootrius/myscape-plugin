@@ -68,37 +68,13 @@ import net.runelite.client.util.Text;
 import okhttp3.OkHttpClient;
 
 /**
- * Links this RuneLite client to a myscape.io account (the two-phase
- * handoff described in myscape's backend -- app/models.py /
- * app/routers/linking.py in the Mootrius/myscape repo: the player
- * generates a short-lived code on the website and pastes it into this
- * plugin's side panel, which exchanges it for a long-lived API key),
- * and, once linked, keeps the website's copy of the player's bank,
- * inventory, worn equipment, Rune Pouch, Potion Storage, and Looting Bag
- * in sync -- the data collection the Purchase Goals and Possessions
- * Monitoring features are built on (see
- * onItemContainerChanged, onGameTick, and onVarbitChanged below) -- and
- * reports every kill/clue-casket/pickpocket's loot as it happens (see
- * onLootReceived below), which the Loot Tracker feature is built on.
+ * Syncs a player's game state to their myscape.io account.
  *
- * Also keeps the player's current skill levels/xp, completed quests,
- * and achievement diary tiers in sync (see readSkills/
- * readCompletedQuestNames/readDiaryTiers, onStatChanged, onWidgetLoaded,
- * and onVarbitChanged below) -- what the Mindmaps feature's skill/quest/
- * diary goal nodes check themselves against server-side (see
- * evaluate_completion in the Mootrius/myscape repo's app/mindmaps.py).
- * Mindmaps' fourth goal type, kc (kill count), needs no plugin work of
- * its own here at all: it's checked against this same player's synced
- * LootEvent history (see onLootReceived below and kc_counts_by_player in
- * the Mootrius/myscape repo's app/loot.py), which was already being
- * captured for the Loot Tracker feature before Mindmaps existed.
- *
- * Also keeps Character Overview's seven-stat summary row live -- combat
- * level, total level, total XP, quests/achievement-diary-tiers/combat-
- * achievements/collection-log completed (see MyscapeClient.
- * CharacterSummaryItem's own doc for the full breakdown of which of the
- * seven have a native RuneLite signal of their own vs. which still rely
- * on readCharacterSummary/patchCharacterSummary below).
+ * The player links the client by pasting a short-lived code from the website into
+ * the side panel, which is exchanged for an API key. Once linked, the plugin keeps
+ * item storages (bank, inventory, equipment and others), skills, quests, diaries
+ * and character summary stats in sync, and reports loot from kills, clue caskets
+ * and pickpockets.
  */
 @Slf4j
 @PluginDescriptor(
@@ -132,43 +108,16 @@ public class MyscapePlugin extends Plugin
 	@Inject
 	private ItemManager itemManager;
 
-	// A container's ItemContainer fires a change event for every single
-	// deposit/withdraw/equip, not just once the player's done -- syncing
-	// on every one of those would mean several requests a second while
-	// someone's actively banking or gearing up. Waiting for this many
-	// quiet seconds after the *last* change across bank/inventory/
-	// equipment (see onItemContainerChanged below, which reschedules
-	// this shared debounce on every relevant event rather than letting
-	// an earlier one fire) collapses a whole banking/gearing session
-	// into one sync per container, sent once things settle.
+	// Container change events fire on every deposit/withdraw/equip. Syncing only after
+	// this many quiet seconds collapses a banking session into one sync per container.
 	private static final int SYNC_DEBOUNCE_SECONDS = 2;
 
-	// The plain "quiet seconds" debounce above never fires at all while
-	// changes keep landing back-to-back -- which is exactly what
-	// happens during sustained activity with no natural pause (killing
-	// monsters continuously, thieving stalls, high alching), since each
-	// new change cancels and reschedules the same task before it ever
-	// gets to run. That's what made Storages Viewer look like it
-	// barely updates: the inventory genuinely was changing constantly,
-	// so the debounce kept getting pushed back instead of collapsing a
-	// short burst the way it's meant to. Capping how long a single
-	// burst can keep deferring the sync bounds the staleness even while
-	// the burst is still going, without giving up the original
-	// quiet-period collapsing for the common short-burst case (banking,
-	// gearing up).
+	// Upper bound on how long a continuous burst of changes can postpone the sync.
+	// The quiet-period debounce alone never fires during sustained activity.
 	private static final int SYNC_MAX_WAIT_SECONDS = 10;
 
-	// The equipment container's items are indexed by slot (see
-	// EquipmentInventorySlot#getSlotIdx), not aggregated by item id the
-	// way bank/inventory are -- this maps each slot index this plugin
-	// cares about to the name Maintrius's own gear-setup feature already
-	// uses for it (see EQUIPMENT_SLOTS in the Mootrius/myscape repo's
-	// original osrs_tracker.py), so the server and the eventual Purchase
-	// Goals UI don't need to know anything about RuneLite's own slot
-	// numbering. EquipmentInventorySlot also defines ARMS/HAIR/JAW
-	// (indices 6, 8, 11) -- unused cosmetic-override slots that never
-	// hold a real item in standard OSRS -- deliberately left out here,
-	// same as Maintrius's own 11-slot list.
+	// Maps equipment slot indices to the slot names used by myscape.io. ARMS, HAIR and
+	// JAW (6, 8, 11) are cosmetic slots that never hold an item and are left out.
 	private static final Map<Integer, String> EQUIPMENT_SLOT_NAMES = buildEquipmentSlotNames();
 
 	private static Map<Integer, String> buildEquipmentSlotNames()
@@ -188,70 +137,25 @@ public class MyscapePlugin extends Plugin
 		return Collections.unmodifiableMap(slots);
 	}
 
-	// Player-Owned-House Potion Storage isn't an ItemContainer the way
-	// bank/inventory/equipment are -- RuneLite (and the client itself)
-	// expose it through the same enum/script plumbing the built-in Bank
-	// Tags plugin's own Potion Storage tab uses (see
-	// net.runelite.client.plugins.banktags.tabs.PotionStorage, bundled
-	// with RuneLite itself): two top-level enums whose values are each
-	// one potion type's own enum id, and a client script that returns
-	// how many total *doses* of that potion type are currently stored
-	// (not a count of physical items -- Potion Storage tracks doses the
-	// way a bank note tracks value, so 10 stored doses of Prayer potion
-	// might have come from any mix of partially- and fully-doses
-	// potions ever deposited). These ids are read directly off
-	// RuneLite's actual shipped bytecode for that plugin, not guessed.
+	// Potion Storage is not an ItemContainer. As in RuneLite's Bank Tags PotionStorage,
+	// it is read through two top-level enums (one enum id per potion type) and a client
+	// script that returns the total stored doses for a potion type.
 	private static final int[] POTION_STORAGE_ENUM_IDS = {4826, 4829};
 	private static final int POTION_STORAGE_TOTAL_DOSES_SCRIPT_ID = 3750;
-	// A potion's per-type enum carries the real item id for each dose
-	// count from 1 to 4 (getIntValue(1)..getIntValue(4)) -- index 0 is
-	// something else entirely (not a dose variant) and is never used
-	// here. 4 is also the largest dose any potion in Potion Storage
-	// actually goes up to.
+	// Enum values 1..4 hold the item id for each dose count.
 	private static final int MAX_POTION_DOSES = 4;
-	// The specific varp ids the Bank Tags plugin's own Potion Storage
-	// tab treats as "something in Potion Storage changed, re-read it" --
-	// used here as the trigger to recompute+resync this plugin's own
-	// snapshot, the same way a bank/inventory/equipment
-	// ItemContainerChanged event triggers a resync for those.
+	// Varps that Bank Tags treats as "Potion Storage changed".
 	private static final int POTION_STORAGE_VARP_MIN = 4272;
 	private static final int POTION_STORAGE_VARP_MAX = 4277;
 
-	// RuneLite's OWN Bank Tags Potion Storage tab doesn't actually stop
-	// at that fixed six-varp range either -- alongside those base vars
-	// it also watches a SET of additional var ids it reads fresh off
-	// the Potion Storage widget itself every client tick
-	// (w.getVarTransmitTrigger(), in its own PotionStorage.java), which
-	// is how potions added to the feature after its original six-var
-	// design (Divine potions among them) end up covered too -- their
-	// dose counts apparently live outside POTION_STORAGE_VARP_MIN..MAX,
-	// so depositing/withdrawing them alone never sets
-	// potionStorageDirty and this plugin's own snapshot for them goes
-	// stale until some unrelated (base-var) potion change happens to
-	// force a full re-read. There's no ItemContainer or other widget
-	// this plugin can reliably pull that same dynamic list from outside
-	// of the Bank Tags UI actually being open, so rather than guess at
-	// (and eventually go stale against again) more hardcoded ids, this
-	// falls back to periodically re-reading Potion Storage outright --
-	// see ticksSincePotionStorageRefresh below -- so a dose change on a
-	// var this plugin doesn't know to watch still shows up within a
-	// bounded time instead of sitting stale indefinitely.
+	// Some potions (e.g. Divine) keep their doses in vars outside the range above, so
+	// changes to them are not detected. Potion Storage is therefore also re-read
+	// periodically (see ticksSincePotionStorageRefresh).
 	private static final int POTION_STORAGE_REFRESH_INTERVAL_TICKS = 50;
 
-	// A Rune Pouch (regular or Divine, including their League/seasonal
-	// "Trouver parcel" cosmetic reclaims -- BH_RUNE_POUCH_TROUVER and
-	// DIVINE_RUNE_POUCH_TROUVER) is a single inventory item, not an
-	// ItemContainer -- RuneLite exposes what's actually stored inside
-	// one the same way it exposes Potion Storage above: not through a
-	// container-changed event, but through a fixed set of varbits (one
-	// pair -- "type" and "quantity" -- per pouch slot) read directly.
-	// This mirrors exactly how RuneLite's own bundled "Rune Pouch"
-	// overlay plugin reads the pouch it draws on top of (see
-	// net.runelite.client.plugins.runepouch.RunepouchOverlay, bundled
-	// with RuneLite itself) -- these are its actual named constants,
-	// not guessed. A regular Rune Pouch only ever fills 3 of these slots
-	// and a Divine Rune Pouch 4, but all 6 are read defensively so this
-	// never silently drops runes if Jagex ever ships a bigger pouch.
+	// A Rune Pouch (including Divine and trouver variants) is a single item, not a
+	// container. Its contents are read from per-slot type/quantity varbits, as in
+	// RuneLite's RunepouchOverlay. All 6 slots are read in case a larger pouch is added.
 	private static final int[] RUNE_POUCH_TYPE_VARBITS = {
 		VarbitID.RUNE_POUCH_TYPE_1, VarbitID.RUNE_POUCH_TYPE_2, VarbitID.RUNE_POUCH_TYPE_3,
 		VarbitID.RUNE_POUCH_TYPE_4, VarbitID.RUNE_POUCH_TYPE_5, VarbitID.RUNE_POUCH_TYPE_6,
@@ -260,51 +164,17 @@ public class MyscapePlugin extends Plugin
 		VarbitID.RUNE_POUCH_QUANTITY_1, VarbitID.RUNE_POUCH_QUANTITY_2, VarbitID.RUNE_POUCH_QUANTITY_3,
 		VarbitID.RUNE_POUCH_QUANTITY_4, VarbitID.RUNE_POUCH_QUANTITY_5, VarbitID.RUNE_POUCH_QUANTITY_6,
 	};
-	// Each "type" varbit above is a small 1-based index into this enum,
-	// not a real item id -- 0 means that slot is empty. getIntValue(type)
-	// resolves it to the actual rune item id, same as RunepouchOverlay.
+	// Each type varbit is a 1-based index into this enum (0 = empty), yielding the rune item id.
 	private static final int RUNE_POUCH_RUNE_ENUM_ID = EnumID.RUNEPOUCH_RUNE;
-	// Which physical items are themselves a Rune Pouch -- used to check
-	// the player still actually owns one before trusting these varbits
-	// (unlike Potion Storage, which has no equivalent "do they still own
-	// the tab" question). See readRunePouchItems's doc for why this
-	// check exists.
+	// Rune Pouch items; used to confirm ownership before trusting the varbits.
 	private static final int[] RUNE_POUCH_ITEM_IDS = {
 		ItemID.BH_RUNE_POUCH, ItemID.BH_RUNE_POUCH_TROUVER, ItemID.DIVINE_RUNE_POUCH, ItemID.DIVINE_RUNE_POUCH_TROUVER,
 	};
 
-	// Achievement diaries -- unlike bank/inventory/potion storage/rune
-	// pouch above, there's no ItemContainer-style "contents" to read at
-	// all here: each area+tier just has its own boolean "have every task
-	// in this tier been done" varbit, one of 48 (12 areas x 4 tiers).
-	// These are RuneLite's own named gameval VarbitID constants (e.g.
-	// VarbitID.ARDOUGNE_DIARY_EASY_COMPLETE), not raw ids guessed at --
-	// see e.g. the OSRS Wiki's RuneScape:Varbit/4478 page for
-	// KANDARIN_DIARY_ELITE_COMPLETE's own documented meaning ("Set to 1
-	// if you've completed all the tasks for the Elite Kandarin Diary").
-	// Keyed by the same lowercase/slugified area name DIARY_AREAS uses
-	// server-side (app/mindmaps.py in the Mootrius/myscape repo) --
-	// RuneLite's own area names don't all match that 1:1 (its "KOUREND"/
-	// "WESTERN"/"LUMBRIDGE" are this app's "kourend_kebos"/
-	// "western_provinces"/"lumbridge_draynor"), so this table is also
-	// what bridges that naming gap; each area's 4-element array is
-	// ordered low-to-high, matching DIARY_TIERS server-side (and
-	// DIARY_TIER_NAMES below). Karamja's easy/medium/hard varbits are
-	// gameval-named ATJUN_*_DONE rather than KARAMJA_DIARY_*_COMPLETE --
-	// a quirk of Jagex's own internal naming for that one area, not a
-	// mismatch on this end (confirmed against the same numeric ids the
-	// older, manually-maintained net.runelite.api.Varbits class uses for
-	// DIARY_KARAMJA_EASY/MEDIUM/HARD). Those same three ALSO differ from
-	// every other area's tier varbit (and from Karamja's own elite
-	// varbit) in what "complete" actually means: every other tier
-	// varbit here is a plain 0/1 flag, but ATJUN_EASY_DONE/MED_DONE/
-	// HARD_DONE are documented (OSRS Wiki, RuneScape:Varbit/3578 et al)
-	// as a three-state counter -- 0 not started, 1 started, 2 complete
-	// -- left over from Karamja Diary predating the unified Achievement
-	// Diary system every other area uses. DIARY_TIER_COMPLETE_VALUES
-	// below is what readDiaryTiers checks each tier varbit against
-	// instead of a hardcoded 1, precisely so this one area's quirk
-	// doesn't silently read as "never completes."
+	// Achievement diaries: one "tier complete" varbit per area and tier, ordered easy to
+	// elite. Keys are myscape.io area slugs, which differ from RuneLite's for Kourend,
+	// Western and Lumbridge. Karamja easy/medium/hard (ATJUN_*_DONE) count 0, 1 and 2
+	// (complete); see DIARY_TIER_COMPLETE_VALUES.
 	private static final String[] DIARY_TIER_NAMES = {"easy", "medium", "hard", "elite"};
 	private static final Map<String, int[]> DIARY_TIER_VARBITS = buildDiaryTierVarbits();
 
@@ -362,13 +232,8 @@ public class MyscapePlugin extends Plugin
 		return Collections.unmodifiableMap(areas);
 	}
 
-	// Per-area, per-tier "this value means complete" thresholds, same
-	// shape/order/keys as DIARY_TIER_VARBITS above -- every area but
-	// Karamja is {1, 1, 1, 1} (a plain 0/1 flag for all four tiers), and
-	// Karamja is {2, 2, 2, 1}: its easy/medium/hard varbits only reach
-	// 2 on completion (see DIARY_TIER_VARBITS' own comment above), while
-	// its elite varbit (KARAMJA_DIARY_ELITE_COMPLETE) is a normal 0/1
-	// flag like every other area's elite tier.
+	// Value at which each tier varbit counts as complete. All 1, except Karamja
+	// easy/medium/hard, which reach 2.
 	private static final Map<String, int[]> DIARY_TIER_COMPLETE_VALUES = buildDiaryTierCompleteValues();
 
 	private static Map<String, int[]> buildDiaryTierCompleteValues()
@@ -381,11 +246,7 @@ public class MyscapePlugin extends Plugin
 		return Collections.unmodifiableMap(values);
 	}
 
-	// Every varbit id that appears anywhere in DIARY_TIER_VARBITS above,
-	// flattened into one set purely so onVarbitChanged below can do a
-	// single cheap membership check per event instead of walking all 12
-	// areas' arrays on every single varbit change in the game (most of
-	// which have nothing to do with diaries at all).
+	// Flat set of the varbits above, for a cheap membership check in onVarbitChanged.
 	private static final Set<Integer> DIARY_VARBIT_IDS = buildDiaryVarbitIds();
 
 	private static Set<Integer> buildDiaryVarbitIds()
@@ -401,24 +262,14 @@ public class MyscapePlugin extends Plugin
 		return Collections.unmodifiableSet(ids);
 	}
 
-	// Combat achievements -- six per-tier "total tasks completed in this
-	// tier" varbits (RuneLite's own named gameval VarbitID constants,
-	// confirmed against the actual RuneLite API jar this plugin builds
-	// against, same as DIARY_TIER_VARBITS above), summed together in
-	// patchCombatAchievementStats below for combatTasksCompleted. There
-	// is no single "combat tasks completed" varbit the way there's a
-	// single QUESTS_COMPLETED_COUNT for quests, so this is the closest
-	// equivalent -- and no "combat tasks total" varbit at all (see
-	// combatAchievementsDirty's own doc for why combatTasksTotal is left
-	// out of this file's own live updates entirely).
+	// Combat achievements: one "tasks completed" varbit per tier, summed into
+	// combatTasksCompleted. No varbit exists for the total (see combatAchievementsDirty).
 	private static final int[] COMBAT_ACHIEVEMENT_COMPLETED_VARBITS = {
 		VarbitID.CA_TOTAL_TASKS_COMPLETED_EASY, VarbitID.CA_TOTAL_TASKS_COMPLETED_MEDIUM,
 		VarbitID.CA_TOTAL_TASKS_COMPLETED_HARD, VarbitID.CA_TOTAL_TASKS_COMPLETED_ELITE,
 		VarbitID.CA_TOTAL_TASKS_COMPLETED_MASTER, VarbitID.CA_TOTAL_TASKS_COMPLETED_GRANDMASTER,
 	};
 
-	// Same reasoning as DIARY_VARBIT_IDS above -- a flattened set purely
-	// for a cheap onVarbitChanged membership check.
 	private static final Set<Integer> COMBAT_ACHIEVEMENT_VARBIT_IDS = buildCombatAchievementVarbitIds();
 
 	private static Set<Integer> buildCombatAchievementVarbitIds()
@@ -435,277 +286,91 @@ public class MyscapePlugin extends Plugin
 	private NavigationButton navButton;
 	private ScheduledFuture<?> syncDebounceTask;
 
-	// When the current debounce burst started (see scheduleSyncDebounced
-	// below), or -1 between bursts. Written from the client thread
-	// (every scheduleSyncDebounced call happens there) and reset back to
-	// -1 from `executor`'s thread once the debounce task actually fires
-	// -- a plain volatile long is enough here since it's only ever used
-	// to compute a delay heuristic, not for correctness the way the
-	// synced snapshot fields are.
+	// Start of the current debounce burst (see scheduleSyncDebounced), or -1 between
+	// bursts. Only used for delay timing, so volatile is enough.
 	private volatile long syncBurstStartMillis = -1;
 
-	// Only ever written from the client thread (see onGameStateChanged /
-	// onGameTick below, both guaranteed by RuneLite's event bus to run
-	// there) and only ever read from the Swing EDT via the getters below
-	// -- volatile so a read on the EDT always sees the latest value
-	// without needing to touch `client` itself off the client thread.
+	// Written only on the client thread (onGameStateChanged, onGameTick) and read from
+	// the Swing EDT through getters, so the EDT never touches `client`.
 	private volatile Long currentAccountHash;
 	private volatile String currentRuneScapeName;
 
-	// The display name last accepted by myscape.io (see
-	// reportRuneScapeNameIfChanged) -- compared against
-	// currentRuneScapeName each tick so an in-game name change is sent
-	// once, and nameReportCooldownUntilMillis throttles retries while
-	// offline or not yet linked.
+	// Display name last accepted by myscape.io (see reportRuneScapeNameIfChanged).
+	// nameReportCooldownUntilMillis throttles retries while offline or not yet linked.
 	private volatile String lastReportedRuneScapeName;
 	private long nameReportCooldownUntilMillis;
 	private static final long NAME_REPORT_RETRY_MILLIS = 60_000L;
 
-	// Each container's most recently observed contents, captured
-	// synchronously on the client thread the moment its
-	// ItemContainerChanged fires (or, for inventory/equipment, the
-	// moment login is first detected -- see onGameTick) and read back
-	// later by the debounce task below, which itself runs on
-	// `executor`'s own thread, not the client thread. RuneLite's Client
-	// (and its ItemContainers) may only safely be read from the client
-	// thread, so the debounce task never touches them directly -- it
-	// only ever reads these already-converted, plain-data snapshots.
-	// Null until the relevant container has been seen at least once
-	// (the bank, in particular, reports nothing until the player has
-	// opened it at least once this session -- same as the RuneLite
-	// Character Exporter plugin Maintrius originally relied on).
+	// Latest contents of each container. Captured on the client thread (on
+	// ItemContainerChanged, or at login for inventory/equipment) and read by the debounce
+	// task on the executor thread, which must not touch the Client. Null until seen.
 	private volatile List<MyscapeClient.BankItem> latestBankItems;
 	private volatile List<MyscapeClient.InventoryItem> latestInventoryItems;
 	private volatile List<MyscapeClient.EquipmentItem> latestEquipmentItems;
-	// Same deal, for Potion Storage -- null until the relevant varps
-	// have actually fired at least once this session (see
-	// onVarbitChanged/onWidgetLoaded below), same as the bank only
-	// reporting contents once it's been opened.
 	private volatile List<MyscapeClient.PotionStorageItem> latestPotionStorageItems;
-	// Same deal, for a Rune Pouch's contents -- null until the relevant
-	// varbits have actually fired at least once this session, same as
-	// Potion Storage above.
 	private volatile List<MyscapeClient.RunePouchItem> latestRunePouchItems;
-	// Same deal, for a Looting Bag's contents -- unlike Potion Storage/
-	// Rune Pouch above, a Looting Bag genuinely is an ItemContainer
-	// (InventoryID.LOOTING_BAG), read the same straightforward way Bank
-	// is -- null until the player has actually opened it at least once
-	// this session, same caveat as Bank.
+	// Looting Bag, Seed Vault, Tackle Box, Forestry Kit, Seed Box and Huntsman's Kit are
+	// real ItemContainers (InventoryID.*). Null until opened this session.
 	private volatile List<MyscapeClient.LootingBagItem> latestLootingBagItems;
-	// Same deal again, for the Seed Vault's contents -- also a genuine
-	// ItemContainer (InventoryID.SEED_VAULT), read and gated the same
-	// way as the Looting Bag just above: null until the player has
-	// actually opened it at least once this session.
 	private volatile List<MyscapeClient.SeedVaultItem> latestSeedVaultItems;
-	// Same deal again, for a Tackle Box's contents -- also a genuine
-	// ItemContainer (InventoryID.TACKLE_BOX), read and gated the same
-	// way as Looting Bag/Seed Vault above: null until the player has
-	// actually opened it at least once this session.
 	private volatile List<MyscapeClient.TackleBoxItem> latestTackleBoxItems;
-	// Same deal again, for the whole PoH Costume Room's contents.
-	// Originally six separate fields, one per piece of furniture, each
-	// assumed to back its own ItemContainer -- live testing found every
-	// piece actually fires ItemContainerChanged on the same containerId
-	// (33405, not any of the InventoryID.POH_COSTUME_ROOM_* constants),
-	// with identical contents regardless of which piece was opened, so
-	// this is read and gated the same simple way as Looting Bag/Seed
-	// Vault/Tackle Box above: null until the player has actually opened
-	// the Costume Room interface at least once this session. Named
-	// latestPohItems (not latestCostumeRoomItems) to match PohItem --
-	// see that class's own comment in MyscapeClient.java.
+	// Every PoH Costume Room furniture piece fires ItemContainerChanged on one shared
+	// container id (see POH_COSTUME_ROOM_CONTAINER_ID). Null until opened this session.
 	private volatile List<MyscapeClient.PohItem> latestPohItems;
-	// Same deal again, for the Forestry Kit's contents -- also a
-	// genuine ItemContainer (InventoryID.FORESTRY_KIT), read and gated
-	// the same way as Looting Bag/Seed Vault/Tackle Box above: null
-	// until the player has actually opened it at least once this
-	// session.
 	private volatile List<MyscapeClient.ForestryKitItem> latestForestryKitItems;
-	// Same deal again, for a Seed Box's contents -- also a genuine
-	// ItemContainer (InventoryID.SEED_BOX), read and gated the same
-	// way as Looting Bag/Seed Vault/Tackle Box/Forestry Kit above: null
-	// until the player has actually opened it at least once this
-	// session. Distinct from the Seed Vault above -- see SeedBoxItem's
-	// own comment in MyscapeClient.java. There is deliberately no
-	// latestMasterScrollBookItems field alongside this one: unlike
-	// every other source here, the Master Scroll Book has no confirmed
-	// container id to read yet (see MasterScrollBookItem's own comment
-	// in MyscapeClient.java) -- see the temporary diagnostic in
-	// onItemContainerChanged below instead.
+	// Distinct from the Seed Vault. The Master Scroll Book has no container id (see
+	// masterScrollBookDirty).
 	private volatile List<MyscapeClient.SeedBoxItem> latestSeedBoxItems;
-	// Same deal again, for a Huntsman's Kit's contents -- also a genuine
-	// ItemContainer (InventoryID.HUNTSMANS_KIT), read and gated the same
-	// way as Looting Bag/Seed Vault/Tackle Box/Forestry Kit/Seed Box
-	// above: null until the player has actually opened it at least once
-	// this session.
 	private volatile List<MyscapeClient.HuntsmansKitItem> latestHuntsmansKitItems;
-	// Same deal again, for a boat's cargo hold -- but one field PER BOAT
-	// SLOT (1-5, the most a player can own at once -- see the OSRS
-	// Wiki's "Boat" article) rather than one shared field, since each
-	// boat is a genuinely separate ItemContainer (InventoryID.
-	// SAILING_BOAT_1_CARGOHOLD through SAILING_BOAT_5_CARGOHOLD) with
-	// its own independent contents -- unlike PoH's six furniture pieces
-	// above, which turned out to all read from one shared container.
-	// Each stays null until THAT boat's cargo hold has actually been
-	// opened at least once this session -- see readBoatCargoItems and
-	// BoatCargoItem's own comment in MyscapeClient.java.
+	// One field per boat slot (1-5); each cargo hold is a separate ItemContainer
+	// (InventoryID.SAILING_BOAT_n_CARGOHOLD).
 	private volatile List<MyscapeClient.BoatCargoItem> latestBoatCargo1Items;
 	private volatile List<MyscapeClient.BoatCargoItem> latestBoatCargo2Items;
 	private volatile List<MyscapeClient.BoatCargoItem> latestBoatCargo3Items;
 	private volatile List<MyscapeClient.BoatCargoItem> latestBoatCargo4Items;
 	private volatile List<MyscapeClient.BoatCargoItem> latestBoatCargo5Items;
-	// Same deal, for skills/quests/diaries -- unlike Potion Storage/Rune
-	// Pouch, though, these are never left null for long once logged in:
-	// see onGameTick's justBecameAvailable block, which reads all three
-	// the moment login is detected, the same reasoning that block already
-	// applies to inventory/equipment/rune pouch (nothing to "change" from
-	// a cold start -- there's already a real level/quest/diary state to
-	// report from the first tick).
+	// Skills, quests and diaries are read as soon as login is detected (see the
+	// justBecameAvailable block in onGameTick), so they are not null for long.
 	private volatile List<MyscapeClient.SkillItem> latestSkillItems;
 	private volatile List<String> latestCompletedQuestNames;
-	// Same deal as latestCompletedQuestNames above, but for
-	// QuestState.IN_PROGRESS instead of FINISHED -- see
-	// readInProgressQuestNames' own doc below. Added for Character
-	// Overview's quest list section (red/yellow/green per quest),
-	// which needs a third state beyond just "done"/"not done".
 	private volatile List<String> latestInProgressQuestNames;
 	private volatile List<MyscapeClient.DiaryTierItem> latestDiaryTierItems;
 
-	// The collection log's per-item obtained/quantity state, unlike
-	// every other source above, isn't read passively off an
-	// ItemContainer/varbit/widget at all -- collectionLogItemCapture
-	// (see its own class doc) has to actively re-trigger the collection
-	// log interface's own refresh to make the client hand this over,
-	// and only once the player has opened the collection log widget at
-	// least once this session (there is no equivalent of inventory/
-	// equipment's login-time freebie here). Set from onGameTick below,
-	// the tick collectionLogItemCapture itself decides a capture pass
-	// has settled -- see its onGameTick doc. Item ids here are in the
-	// same id space CollectionLogSchemaExporter's own exported schema
-	// already uses.
+	// The collection log is not read passively: collectionLogItemCapture re-triggers the
+	// interface refresh, and only works once the log has been opened this session.
 	private final CollectionLogItemCapture collectionLogItemCapture = new CollectionLogItemCapture();
 	private volatile List<MyscapeClient.CollectionLogItem> latestCollectionLogItems;
 
-	// The Master Scroll Book, unlike every other source above, isn't
-	// backed by a RuneLite ItemContainer -- two rounds of diagnostics
-	// confirmed that (see readMasterScrollBookItems' own comment for
-	// the full story and the widget layout they found), so there's no
-	// ItemContainerChanged to key off of. This flag is set from
-	// onWidgetLoaded below instead, whenever InterfaceID.BOOKOFSCROLLS
-	// itself loads (i.e. the player opened it), and consumed on the
-	// next game tick the same way skillsDirty/questsDirty/diariesDirty
-	// above are.
+	// The Master Scroll Book has no ItemContainer (see readMasterScrollBookItems). Set in
+	// onWidgetLoaded when InterfaceID.BOOKOFSCROLLS loads.
 	private volatile boolean masterScrollBookDirty;
 	private volatile List<MyscapeClient.MasterScrollBookItem> latestMasterScrollBookItems;
 
-	// Same story as the Master Scroll Book just above: the "Character
-	// Summary" tab of the quest journal's Account Summary sidepanel
-	// (InterfaceID.ACCOUNT_SUMMARY_SIDEPANEL) has no ItemContainer
-	// backing any of its seven stats, only widgets that exist while that
-	// specific tab is open -- so this is likewise set from onWidgetLoaded
-	// below. (Six of the seven DO now have their own live varbit/varp or
-	// derived signal -- see patchCombatAndTotalStats/patchQuestStats/
-	// patchDiaryStats/patchCombatAchievementStats/patchCollectionStats
-	// below and CharacterSummaryItem's own doc in MyscapeClient.java --
-	// but this widget-driven path is still what establishes the very
-	// first baseline each session, and still the periodic full-accuracy
-	// correction pass every one of those live patches implicitly relies
-	// on to fix any drift.) Unlike masterScrollBookDirty though, this
-	// isn't a one-shot flag consumed on the very next tick -- a live
-	// test showed combat level/total level/total XP specifically (NOT
-	// the four completion-count stats below them on the same panel)
-	// still read as placeholder values (0.0/100/100) one tick after
-	// load, meaning whatever script actually computes those three
-	// (summed across all 24 skills, unlike the other four's simple
-	// stored counts) hadn't finished yet. This counts down instead --
-	// set to CHARACTER_SUMMARY_REREAD_TICKS on load, re-read on every
-	// tick while positive (see onGameTick below) -- so whichever later
-	// tick the real numbers actually land on still gets captured. Each
-	// successful re-read also re-calls scheduleSyncDebounced, which
-	// pushes the actual HTTP send further out every time (see that
-	// method's own doc) -- so the value that ends up syncing is
-	// whichever read happened last, not the first.
+	// The Character Summary tab (InterfaceID.ACCOUNT_SUMMARY_SIDEPANEL) is backed by
+	// widgets, so it is flagged from onWidgetLoaded. Combat level, total level and total
+	// XP still read as placeholders one tick after load, so this counts down from
+	// CHARACTER_SUMMARY_REREAD_TICKS and re-reads each tick. Each re-read reschedules the
+	// debounced sync, so the last read is sent.
 	private static final int CHARACTER_SUMMARY_REREAD_TICKS = 8;
 	private volatile int characterSummaryRereadTicksLeft;
 	private volatile MyscapeClient.CharacterSummaryItem latestCharacterSummary;
 
-	// A handful of the ItemContainer-backed sources above (Looting Bag,
-	// Seed Vault, Tackle Box, Forestry Kit, Seed Box, PoH Costume Room,
-	// Huntsman's Kit, and each boat's Cargo Hold) share a real game
-	// quirk their read*Items methods alone can't work around: checking
-	// one of these while it's ALREADY empty sends no ItemContainerChanged
-	// at all -- confirmed live (and independently, by another RuneLite
-	// plugin dedicated to the Looting Bag specifically, which hit and
-	// solved the exact same problem the same way this does) -- so
-	// onItemContainerChanged simply never fires to report the empty
-	// state, and a storage that's genuinely empty the first time a
-	// player ever checks it stays permanently un-synced instead of
-	// syncing as empty. The interface itself still opens either way
-	// (there's something on screen to see "empty" from), just with no
-	// underlying container array write for RuneLite's own change-
-	// detection to key off of.
-	//
-	// This map is the fix: onWidgetLoaded below queues an explicit,
-	// unconditional re-read of the relevant container id(s) (mapped to
-	// whichever tick they were queued on) the moment one of these
-	// storages' own interface loads, regardless of whether
-	// ItemContainerChanged separately fires for the same open -- and
-	// ALSO regardless of whether the container turns out empty or not,
-	// so this doubles as a second (harmless, idempotent) read on a
-	// normal non-empty open rather than needing to special-case "empty"
-	// at all. Deliberately not read on the very same tick it's queued:
-	// mirroring the other Looting Bag plugin's own fix, the container
-	// isn't guaranteed populated until the tick after its widget loads.
-	//
-	// That "one tick later" read used to be a single, one-shot attempt
-	// -- if client.getItemContainer(containerId) still came back null
-	// then, the entry was dropped and nothing retried it, on the
-	// assumption that one tick is always enough. That assumption is the
-	// suspected cause of a real report: every other virtual storage
-	// here registered as synced promptly, but the PoH Costume Room
-	// consistently took noticeably longer. Unlike the other virtual
-	// storages, the Costume Room's container id is assigned at runtime
-	// by a newer, consolidated interface script (see
-	// POH_COSTUME_ROOM_CONTAINER_ID's own comment) that plausibly needs
-	// more than one tick to finish building its combined view across
-	// all six furniture pieces -- if so, the single-shot reread was
-	// firing before the container actually existed yet, and then just
-	// giving up, leaving that sync to wait on the next real
-	// ItemContainerChanged (a deposit/withdrawal), which might not come
-	// for a while. onGameTick below now keeps
-	// retrying a still-null entry on every subsequent tick instead of
-	// abandoning it after one miss, up to MAX_CONTAINER_REREAD_WAIT_TICKS
-	// -- long enough to cover a slow-to-build interface like the
-	// Costume Room, but still bounded so the four boat-cargo slots that
-	// are queued together but never actually populate for a given
-	// player (see VIRTUAL_STORAGE_WIDGET_CONTAINER_IDS' own comment)
-	// don't retry forever. Set only from onWidgetLoaded and consumed
-	// only from onGameTick -- both client-thread-only callbacks, so
-	// this needs no synchronization of its own despite being a plain
-	// (non-volatile) mutable map, the same reasoning
-	// potionStorageDirty/runePouchDirty above already rely on.
+	// Looting Bag, Seed Vault, Tackle Box, Forestry Kit, Seed Box, PoH Costume Room,
+	// Huntsman's Kit and boat cargo holds share a quirk: opening one that is already
+	// empty sends no ItemContainerChanged, so its empty state would never sync.
+	// onWidgetLoaded therefore queues a re-read of the container id (mapped to the tick
+	// it was queued on). It runs a tick later because the container may not be populated
+	// when the widget loads, and onGameTick retries a null container up to
+	// MAX_CONTAINER_REREAD_WAIT_TICKS. Only used from client-thread callbacks.
 	private final Map<Integer, Integer> pendingContainerRereadTicks = new LinkedHashMap<>();
 
-	// How many extra ticks onGameTick below keeps retrying a queued
-	// container reread that's still coming back null, before giving up
-	// on it -- see pendingContainerRereadTicks' own field doc for why
-	// this exists (the PoH Costume Room's own build script suspected
-	// of needing more than one tick to populate) and why it's bounded
-	// rather than unconditional (the boat-cargo slots that are queued
-	// together but never actually populate for a given player). 10
-	// ticks is ~6 seconds real time -- comfortably more than any
-	// virtual storage here has been observed to need, while still
-	// short enough that a doomed boat-cargo entry doesn't sit around
-	// retrying for the rest of the session.
+	// Extra ticks to keep retrying a queued re-read that returns null (about 6 seconds).
+	// Bounded because some boat cargo slots are queued but never populate.
 	private static final int MAX_CONTAINER_REREAD_WAIT_TICKS = 10;
 
-	// Maps a "check it" interface's own widget group id to the single
-	// ItemContainer id it backs, for every source above with exactly
-	// one such container -- consulted from onWidgetLoaded below to
-	// populate pendingContainerRereadTicks. Boat Cargo Hold isn't in
-	// here: its one shared interface (InterfaceID.SAILING_BOAT_CARGOHOLD)
-	// can back any of five different container ids depending on which
-	// boat was opened, so onWidgetLoaded queues all five directly
-	// instead of going through a 1:1 lookup here.
+	// Maps an interface's widget group id to the one ItemContainer id it backs. Boat
+	// cargo is not listed because one shared interface can back any of five containers,
+	// so onWidgetLoaded queues all five directly.
 	private static final Map<Integer, Integer> VIRTUAL_STORAGE_WIDGET_CONTAINER_IDS = buildVirtualStorageWidgetContainerIds();
 
 	private static Map<Integer, Integer> buildVirtualStorageWidgetContainerIds()
@@ -718,8 +383,7 @@ public class MyscapePlugin extends Plugin
 		ids.put(InterfaceID.FORESTRY_KIT_MAIN, InventoryID.FORESTRY_KIT);
 		ids.put(InterfaceID.FORESTRY_KIT_SIDE, InventoryID.FORESTRY_KIT);
 		ids.put(InterfaceID.HOSIDIUS_SEEDBOX, InventoryID.SEED_BOX);
-		// POH_COSTUME_ROOM_CONTAINER_ID, not InventoryID.POH_COSTUMES --
-		// see that constant's own comment below for why.
+		// See POH_COSTUME_ROOM_CONTAINER_ID for why not InventoryID.POH_COSTUMES.
 		ids.put(InterfaceID.POH_COSTUMES, POH_COSTUME_ROOM_CONTAINER_ID);
 		ids.put(InterfaceID.POH_COSTUMES_SIDE, POH_COSTUME_ROOM_CONTAINER_ID);
 		ids.put(InterfaceID.HUNTSMANS_KIT, InventoryID.HUNTSMANS_KIT);
@@ -746,12 +410,7 @@ public class MyscapePlugin extends Plugin
 			.priority(6)
 			.panel(panel)
 			.build();
-		// panel/navButton are always built above regardless of this
-		// setting -- background linking/syncing has nothing to do with
-		// whether the toolbar icon that opens the panel is showing, so
-		// turning "Show sidebar" off just leaves this one addNavigation
-		// call skipped (onConfigChanged below adds/removes it live if
-		// the player flips the setting later without restarting).
+		// Linking and syncing do not depend on the toolbar icon.
 		if (config.showSidebar())
 		{
 			clientToolbar.addNavigation(navButton);
@@ -803,13 +462,7 @@ public class MyscapePlugin extends Plugin
 		pendingContainerRereadTicks.clear();
 	}
 
-	/** Aggregates a container's raw slots by item id -- necessary (not
-	 * just defensive) for the inventory, where the same untradeable item
-	 * commonly occupies several separate slots at quantity 1 each; a
-	 * bank slot never actually splits one item across two slots, but
-	 * there's no reason to assume that here either when a Map costs
-	 * nothing extra. -1/0-quantity entries are how RuneLite represents
-	 * an empty slot, not a real item -- skipped rather than counted. */
+	/** Sums quantities by item id. Empty slots (id or quantity <= 0) are skipped. */
 	private static Map<Integer, Integer> aggregateQuantities(ItemContainer container)
 	{
 		Map<Integer, Integer> quantities = new LinkedHashMap<>();
@@ -840,14 +493,7 @@ public class MyscapePlugin extends Plugin
 		T create(int itemId, String itemName, int quantity);
 	}
 
-	/** Looks up an item's real display name via RuneLite's own item
-	 * definitions (not the OSRS Wiki) -- unlike the wiki's GE mapping,
-	 * this covers every item in the game, tradeable or not, which is
-	 * exactly why it's needed: see BankItem's docstring in
-	 * MyscapeClient.java for what this name is actually used for
-	 * server-side. Must only ever be called from the client thread (see
-	 * the field doc on latestBankItems and friends) -- both call sites
-	 * below (onItemContainerChanged, onGameTick) already guarantee that. */
+	/** Looks up an item's display name from RuneLite's item definitions. Client thread only. */
 	private String resolveItemName(int itemId)
 	{
 		try
@@ -856,10 +502,7 @@ public class MyscapePlugin extends Plugin
 		}
 		catch (Exception e)
 		{
-			// An unrecognized id should never stop the rest of the sync --
-			// the item still syncs by id, it just won't name-match an
-			// untradeable gear-setup slot until this resolves some other
-			// way (e.g. the wiki mapping, if it's actually tradeable).
+			// An unknown id should not stop the sync; the item still syncs by id.
 			return null;
 		}
 	}
@@ -879,19 +522,10 @@ public class MyscapePlugin extends Plugin
 		return items;
 	}
 
-	/** A bank placeholder -- the greyed-out marker "Always Placeholder"/
-	 * withdraw-as-placeholder leaves behind in a slot to show "you keep
-	 * one of these here" without actually holding any -- is its own
-	 * distinct item id in the client's item table (a real ItemContainer
-	 * slot, with a real nonzero quantity, so aggregateQuantities' own
-	 * quantity<=0 check above never catches it), not a quantity-0
-	 * marker on the real item's own id. RuneLite exposes that via
-	 * getPlaceholderTemplateId(), which is -1 for every genuine item and
-	 * only ever set on a placeholder's own id -- the one reliable way to
-	 * tell "an empty placeholder slot" apart from "one of the real
-	 * thing" (see readBankItems above, which is the only caller: a
-	 * placeholder is a bank-only concept, nothing else read here can
-	 * have one). */
+	/**
+	 * A bank placeholder is a separate item id (template id other than -1) with a nonzero
+	 * quantity, so aggregateQuantities does not skip it.
+	 */
 	private boolean isPlaceholder(int itemId)
 	{
 		try
@@ -909,111 +543,50 @@ public class MyscapePlugin extends Plugin
 		return readItems(inventory, MyscapeClient.InventoryItem::new);
 	}
 
-	/** A Looting Bag genuinely is an ItemContainer (InventoryID.
-	 * LOOTING_BAG), unlike Potion Storage/Rune Pouch below -- read the
-	 * same straightforward way Bank is (see readBankItems above), only
-	 * reporting contents once the player has actually opened it at
-	 * least once this session (same caveat as Bank). */
+	/** A Looting Bag is a real ItemContainer (InventoryID.LOOTING_BAG), read like the bank. */
 	private List<MyscapeClient.LootingBagItem> readLootingBagItems(ItemContainer lootingBag)
 	{
 		return readItems(lootingBag, MyscapeClient.LootingBagItem::new);
 	}
 
-	/** The Farming Guild Seed Vault also genuinely is an ItemContainer
-	 * (InventoryID.SEED_VAULT), same as the Looting Bag just above --
-	 * read the exact same straightforward way, only reporting contents
-	 * once the player has actually opened it at least once this
-	 * session (same caveat as Bank/Looting Bag). */
 	private List<MyscapeClient.SeedVaultItem> readSeedVaultItems(ItemContainer seedVault)
 	{
 		return readItems(seedVault, MyscapeClient.SeedVaultItem::new);
 	}
 
-	/** A Tackle Box also genuinely is an ItemContainer (InventoryID.
-	 * TACKLE_BOX), same as the Looting Bag/Seed Vault above -- read the
-	 * exact same straightforward way, only reporting contents once the
-	 * player has actually opened it at least once this session (same
-	 * caveat as Bank/Looting Bag/Seed Vault). */
 	private List<MyscapeClient.TackleBoxItem> readTackleBoxItems(ItemContainer tackleBox)
 	{
 		return readItems(tackleBox, MyscapeClient.TackleBoxItem::new);
 	}
 
-	/** The whole PoH Costume Room also genuinely is an ItemContainer --
-	 * read the exact same straightforward way as Looting Bag/Seed
-	 * Vault/Tackle Box above, only reporting contents once the player
-	 * has actually opened the Costume Room interface at least once
-	 * this session (same caveat as Bank/Looting Bag/Seed Vault/Tackle
-	 * Box). Originally six separate read methods, one per piece of
-	 * furniture, each assumed to read its own dedicated ItemContainer
-	 * and (for the Treasure Chest/Cape Rack) merge several widget
-	 * pages together. Live testing found that assumption wrong: every
-	 * piece fires ItemContainerChanged on the same containerId (33405,
-	 * not any of the InventoryID.POH_COSTUME_ROOM_* constants those six
-	 * methods checked for) with identical contents regardless of which
-	 * piece was opened, so this collapses back down to the same simple
-	 * single-container pattern as readTackleBoxItems above -- no
-	 * per-page merging needed. Named readPohItems (not
-	 * readCostumeRoomItems) to match PohItem -- see that class's own
-	 * comment in MyscapeClient.java. */
+	/** Read from the one container shared by all PoH Costume Room furniture. */
 	private List<MyscapeClient.PohItem> readPohItems(ItemContainer poh)
 	{
 		return readItems(poh, MyscapeClient.PohItem::new);
 	}
 
-	/** The Forestry Kit also genuinely is an ItemContainer
-	 * (InventoryID.FORESTRY_KIT), same as the Looting Bag/Seed Vault/
-	 * Tackle Box above -- read the exact same straightforward way,
-	 * only reporting contents once the player has actually opened it
-	 * at least once this session. */
 	private List<MyscapeClient.ForestryKitItem> readForestryKitItems(ItemContainer forestryKit)
 	{
 		return readItems(forestryKit, MyscapeClient.ForestryKitItem::new);
 	}
 
-	/** A Seed Box also genuinely is an ItemContainer
-	 * (InventoryID.SEED_BOX), same as the Looting Bag/Seed Vault/
-	 * Tackle Box/Forestry Kit above -- read the exact same
-	 * straightforward way, only reporting contents once the player
-	 * has actually opened it at least once this session. Distinct
-	 * from the Seed Vault above -- see SeedBoxItem's own comment in
-	 * MyscapeClient.java. */
 	private List<MyscapeClient.SeedBoxItem> readSeedBoxItems(ItemContainer seedBox)
 	{
 		return readItems(seedBox, MyscapeClient.SeedBoxItem::new);
 	}
 
-	/** A Huntsman's Kit also genuinely is an ItemContainer
-	 * (InventoryID.HUNTSMANS_KIT), same as the Looting Bag/Seed Vault/
-	 * Tackle Box/Forestry Kit/Seed Box above -- read the exact same
-	 * straightforward way, only reporting contents once the player has
-	 * actually opened it at least once this session. */
 	private List<MyscapeClient.HuntsmansKitItem> readHuntsmansKitItems(ItemContainer huntsmansKit)
 	{
 		return readItems(huntsmansKit, MyscapeClient.HuntsmansKitItem::new);
 	}
 
-	/** One boat's Cargo Hold also genuinely is an ItemContainer (one of
-	 * InventoryID.SAILING_BOAT_1_CARGOHOLD through
-	 * SAILING_BOAT_5_CARGOHOLD, depending which boat -- see
-	 * applyContainerSnapshot's own dispatch above), read the exact same
-	 * straightforward way as every other single-container source above,
-	 * only reporting a given boat's contents once the player has
-	 * actually opened THAT boat's cargo hold at least once this
-	 * session. Shared by all five slots (which boat this reads is
-	 * entirely up to which container id the caller passes in) rather
-	 * than five near-identical methods, since the read itself doesn't
-	 * care which boat it's reading -- see BoatCargoItem's own comment
-	 * in MyscapeClient.java for why the slot number still matters
-	 * everywhere else around this. */
+	/** One boat's cargo hold (InventoryID.SAILING_BOAT_n_CARGOHOLD); the caller passes the container id. */
 	private List<MyscapeClient.BoatCargoItem> readBoatCargoItems(ItemContainer boatCargo)
 	{
 		return readItems(boatCargo, MyscapeClient.BoatCargoItem::new);
 	}
 
-	/** Unlike bank/inventory, equipment is read by fixed slot index
-	 * (EQUIPMENT_SLOT_NAMES) rather than aggregated -- exactly one item
-	 * can ever occupy a given equipment slot. */
+	/** Equipment is read by fixed slot index (EQUIPMENT_SLOT_NAMES), not aggregated. */
 	private List<MyscapeClient.EquipmentItem> readEquipmentItems(ItemContainer equipment)
 	{
 		Item[] slots = equipment.getItems();
@@ -1036,25 +609,11 @@ public class MyscapePlugin extends Plugin
 		return items;
 	}
 
-	/** Reads Potion Storage's current contents -- unlike
-	 * readBankItems/readInventoryItems/readEquipmentItems above, there's
-	 * no ItemContainer to read this off of; Potion Storage tracks total
-	 * *doses* per potion type, not discrete item stacks (see the field
-	 * doc on POTION_STORAGE_ENUM_IDS above for the full mechanism this
-	 * mirrors, straight from RuneLite's own bundled Bank Tags plugin).
-	 * Must only ever be called from the client thread, same as the
-	 * other readXItems methods (both call sites below already
-	 * guarantee that).
-	 *
-	 * Reports each potion type as however many physical items totalling
-	 * that many doses withdrawing it "all at once" would actually hand
-	 * back -- e.g. 10 stored doses of Prayer potion becomes two
-	 * Prayer potion(4) plus one Prayer potion(2) -- rather than the raw
-	 * dose count itself, so the result slots into the exact same
-	 * item-id/quantity shape bank/inventory/equipment already use, and
-	 * the server needs zero special-casing to treat it as just another
-	 * owned-item source (see PotionStorageItem's docstring in the
-	 * Mootrius/myscape repo's app/models.py). */
+	/**
+	 * Reads Potion Storage (see POTION_STORAGE_ENUM_IDS). Each potion's total doses are
+	 * reported as the potions a withdrawal would give, e.g. 10 doses of Prayer potion
+	 * become 2 x (4) and 1 x (2). Client thread only.
+	 */
 	private List<MyscapeClient.PotionStorageItem> readPotionStorageItems()
 	{
 		List<MyscapeClient.PotionStorageItem> items = new ArrayList<>();
@@ -1102,51 +661,21 @@ public class MyscapePlugin extends Plugin
 		return items;
 	}
 
-	/** Whether any of the Rune Pouch variants (see RUNE_POUCH_ITEM_IDS) is
-	 * currently sitting in the player's inventory OR bank -- see
-	 * readRunePouchItems's doc for why this gate exists. A pouch can't be
-	 * worn, but it CAN be banked (this used not to be true in OSRS, but
-	 * is again as of the update that let players store one in the bank),
-	 * and its contents are account-wide varbit state, not something that
-	 * stops being real just because the physical pouch is sitting in the
-	 * bank rather than the inventory -- checking inventory alone meant a
-	 * banked pouch's runes silently vanished from every synced snapshot
-	 * even though the player still owns them, exactly as much as the
-	 * rest of what's in their bank. The bank container is null until the
-	 * player has opened it at least once this session (same caveat as
-	 * everywhere else in this file that reads it) -- until then, a
-	 * banked pouch simply isn't detectable yet, same as the rest of the
-	 * bank's own contents. Must only ever be called from the client
-	 * thread, same as readRunePouchItems. Only ever consulted by
-	 * playerDefinitelyDoesNotOwnRunePouch below now, not
-	 * readRunePouchItems directly -- see that method's own doc for why
-	 * "not found here (yet)" and "confirmed not owned" ended up needing
-	 * to be two different questions. */
+	/**
+	 * Whether a Rune Pouch is in the inventory or bank. The bank container is null
+	 * until opened this session. Client thread only.
+	 */
 	private boolean playerOwnsRunePouch()
 	{
 		return containerHasRunePouch(client.getItemContainer(InventoryID.INV))
 			|| containerHasRunePouch(client.getItemContainer(InventoryID.BANK));
 	}
 
-	/** The actual gate readRunePouchItems uses -- deliberately NOT just
-	 * "!playerOwnsRunePouch()". A fresh login populates the Rune Pouch
-	 * varbits immediately (account-wide state, same as every other stat)
-	 * but leaves the bank ItemContainer null until the player opens their
-	 * bank at least once this session (see playerOwnsRunePouch's own
-	 * comment) -- so right after login, with a pouch stocked and safely
-	 * banked, playerOwnsRunePouch() would report false (inventory empty,
-	 * bank not loaded yet) even though the player still genuinely owns
-	 * it, and readRunePouchItems would wrongly report an empty pouch
-	 * until the bank happened to get opened. "Haven't found it (in a
-	 * container we can't even see yet)" and "confirmed it's actually
-	 * gone" are different things, and only the second one should ever
-	 * suppress otherwise-valid varbit data: this returns true (state the
-	 * varbits every session actually trust) whenever inventory AND a
-	 * *loaded* bank both fail to show a pouch, but stays false -- "not
-	 * proven, so don't assume it's gone" -- for as long as the bank
-	 * container is still null, exactly the login gap this exists to
-	 * cover. Must only ever be called from the client thread, same as
-	 * readRunePouchItems. */
+	/**
+	 * Whether the player is confirmed to no longer own a Rune Pouch. Right after login
+	 * the bank container is still null, so a banked pouch would look unowned; this stays
+	 * false until the bank has loaded. Client thread only.
+	 */
 	private boolean playerDefinitelyDoesNotOwnRunePouch()
 	{
 		if (client.getItemContainer(InventoryID.BANK) == null)
@@ -1175,29 +704,11 @@ public class MyscapePlugin extends Plugin
 		return false;
 	}
 
-	/** Reads a Rune Pouch's current contents -- unlike
-	 * readBankItems/readInventoryItems/readEquipmentItems above, there's
-	 * no ItemContainer to read this off of; RuneLite exposes it through
-	 * six type/quantity varbit pairs instead (see the field doc on
-	 * RUNE_POUCH_TYPE_VARBITS above for the full mechanism this mirrors,
-	 * straight from RuneLite's own bundled Rune Pouch overlay plugin).
-	 * Must only ever be called from the client thread, same as the other
-	 * readXItems methods (both call sites below already guarantee that).
-	 *
-	 * Returns an empty list -- rather than whatever the varbits happen
-	 * to still say -- once the player's CONFIRMED to no longer have a
-	 * Rune Pouch anywhere in their inventory or a *loaded* bank (see
-	 * playerDefinitelyDoesNotOwnRunePouch): unlike Potion Storage, these
-	 * varbits are the pouch's own carried state, so without some check
-	 * here, a pouch that was sold or otherwise given up while stocked
-	 * would keep being reported as "owned" contents long after both it
-	 * and the runes actually left the account. Deliberately NOT gated on
-	 * plain ownership (playerOwnsRunePouch) any more, though -- see
-	 * playerDefinitelyDoesNotOwnRunePouch's own doc for the login-gap bug
-	 * that distinction fixes. Multiple slots holding the same rune type
-	 * (not possible in-game today, but nothing guarantees that) are
-	 * merged into one entry, same as aggregateQuantities does for bank/
-	 * inventory. */
+	/**
+	 * Reads a Rune Pouch from its varbits (see RUNE_POUCH_TYPE_VARBITS). Returns an empty
+	 * list once the pouch is confirmed gone, since the varbits would keep reporting its
+	 * old contents. Client thread only.
+	 */
 	private List<MyscapeClient.RunePouchItem> readRunePouchItems()
 	{
 		if (playerDefinitelyDoesNotOwnRunePouch())
@@ -1236,21 +747,7 @@ public class MyscapePlugin extends Plugin
 		return items;
 	}
 
-	/** Every one of RuneLite's own Skill.values() -- real skill names as
-	 * RuneLite itself defines them, not some separately hardcoded 24-
-	 * entry list of this plugin's own, so a skill this client's RuneLite
-	 * build doesn't know about is simply never reported (and one it's
-	 * since added, like Sailing, is picked up automatically without this
-	 * plugin needing an update just to keep pace). `skill.name()` lower-
-	 * cased is always a single lowercase word for a real OSRS skill (e.g.
-	 * "attack", "sailing"), matching SKILL_NAMES in the Mootrius/myscape
-	 * repo's app/mindmaps.py exactly. getRealSkillLevel is the player's
-	 * base level (unaffected by a temporary boost/drain from a potion or
-	 * prayer) -- a goal should track real progress, not whatever a
-	 * player's level happens to be boosted to for the next few minutes.
-	 * Must only ever be called from the client thread, same as the other
-	 * readXItems methods above (both call sites below already guarantee
-	 * that). */
+	/** Reports every skill RuneLite knows, at its real (unboosted) level. Client thread only. */
 	private List<MyscapeClient.SkillItem> readSkills()
 	{
 		List<MyscapeClient.SkillItem> items = new ArrayList<>();
@@ -1262,18 +759,7 @@ public class MyscapePlugin extends Plugin
 		return items;
 	}
 
-	/** Every net.runelite.api.Quest (RuneLite's own full quest and
-	 * miniquest list) this account has finished, by RuneLite's own
-	 * display name for it (e.g. "Cook's Assistant") -- matched case-
-	 * insensitively against a blue goal node's chosen quest server-side
-	 * (see Player.completed_quests' docstring in the Mootrius/myscape
-	 * repo's app/models.py), so nothing here needs to normalize or
-	 * cross-reference names against that server-side quest list itself.
-	 * Quest#getState is client-thread-only, same as the other readXItems
-	 * methods above (both call sites below already guarantee that) -- it
-	 * runs a client script and reads the result straight off the
-	 * client's own int stack, the same mechanism readPotionStorageItems
-	 * above already uses for a different script. */
+	/** Names of finished quests and miniquests. Quest#getState runs a client script, so client thread only. */
 	private List<String> readCompletedQuestNames()
 	{
 		List<String> names = new ArrayList<>();
@@ -1287,13 +773,7 @@ public class MyscapePlugin extends Plugin
 		return names;
 	}
 
-	/** Same scan as readCompletedQuestNames above, but collecting every
-	 * quest/miniquest QuestState.IN_PROGRESS instead of FINISHED --
-	 * Character Overview's quest list section uses this, alongside
-	 * completed_quests, to tell "started but not finished" (yellow)
-	 * apart from "never started" (red, i.e. absent from both lists) --
-	 * see Player.completed_quests' docstring in the Mootrius/myscape
-	 * repo's app/models.py for the server-side field this feeds. */
+	/** Names of quests that are QuestState.IN_PROGRESS. Client thread only. */
 	private List<String> readInProgressQuestNames()
 	{
 		List<String> names = new ArrayList<>();
@@ -1307,21 +787,10 @@ public class MyscapePlugin extends Plugin
 		return names;
 	}
 
-	/** This account's highest completed tier per achievement diary area,
-	 * from RuneLite's own per-tier "complete" varbits (see
-	 * DIARY_TIER_VARBITS above) -- an area with nothing completed yet is
-	 * simply left out of the result, matching how Player.diary_tiers only
-	 * ever stores one current tier per area server-side (see that same
-	 * docstring). Each area's 4 varbits are checked low-to-high against
-	 * that same tier's DIARY_TIER_COMPLETE_VALUES threshold (1 for every
-	 * area/tier except Karamja's easy/medium/hard, which complete at 2 --
-	 * see that map's own doc), and this stops at the first one that
-	 * hasn't reached it, since the real diary journal only ever lets a
-	 * player finish a tier once every lower tier is already done --
-	 * there's no such thing as Hard being complete while Medium isn't, so
-	 * nothing here needs to handle that. Must only ever be called from
-	 * the client thread, same as the other readXItems methods above
-	 * (both call sites below already guarantee that). */
+	/**
+	 * The highest completed tier per diary area, omitting areas with none. Stops at the
+	 * first incomplete tier. Client thread only.
+	 */
 	private List<MyscapeClient.DiaryTierItem> readDiaryTiers()
 	{
 		List<MyscapeClient.DiaryTierItem> items = new ArrayList<>();
@@ -1347,20 +816,9 @@ public class MyscapePlugin extends Plugin
 		return items;
 	}
 
-	// The whole Costume Room's contents (every piece of furniture
-	// combined -- see PohItem's own comment above) live behind
-	// this one dynamically-assigned containerId. It's not one of
-	// RuneLite's named InventoryID constants -- gameval only names the
-	// fixed, game-load-time-assigned containers, while this one is
-	// assigned at runtime by Jagex's newer, consolidated Costume Room
-	// interface script (InterfaceID.POH_COSTUMES) -- so unlike every
-	// other containerId check in onItemContainerChanged below, there's
-	// no InventoryID.* constant to reference here. Confirmed by live
-	// testing: opening each of the six pieces of furniture in turn
-	// (Magic Wardrobe, Armour Case, Fancy Dress Box, Toy Box, Treasure
-	// Chest, Magic Cape Rack) fired ItemContainerChanged with this
-	// exact id every time, with identical contents regardless of which
-	// piece was opened.
+	// The Costume Room's contents (all furniture pieces) arrive on one container id.
+	// It is assigned at runtime by the consolidated Costume Room interface script, so
+	// there is no InventoryID constant for it.
 	private static final int POH_COSTUME_ROOM_CONTAINER_ID = 33405;
 
 	@Subscribe
@@ -1377,38 +835,20 @@ public class MyscapePlugin extends Plugin
 		}
 	}
 
-	/** The actual per-container dispatch onItemContainerChanged above
-	 * runs -- pulled out into its own method so onGameTick's deferred
-	 * empty-storage reread below (see pendingContainerRereadTicks' own
-	 * field doc) can apply exactly the same snapshot logic to a
-	 * container it read directly off `client`, without onItemContainerChanged
-	 * ever having fired for it. Returns whether `containerId` was one
-	 * this plugin actually recognized (and therefore updated a
-	 * latest*Items field for) -- both call sites use that to decide
-	 * whether a sync is actually worth scheduling. */
+	/** Per-container dispatch, shared with the deferred re-read in onGameTick. Returns true if tracked. */
 	private boolean applyContainerSnapshot(int containerId, ItemContainer container)
 	{
 		if (containerId == InventoryID.BANK)
 		{
 			latestBankItems = readBankItems(container);
-			// Whether a Rune Pouch is sitting in the BANK at all can
-			// change here too (depositing/withdrawing it) -- same
-			// reasoning as the INV branch just below, now that a pouch
-			// can be banked (see playerOwnsRunePouch's own comment).
+			// A Rune Pouch can be banked, so ownership may have changed.
 			runePouchDirty = true;
 		}
 		else if (containerId == InventoryID.INV)
 		{
 			latestInventoryItems = readInventoryItems(container);
-			// Whether a Rune Pouch is even in the inventory at all (not
-			// just what it contains) can change here too -- picking one
-			// up, dropping it, selling it, trading it away. That's not
-			// something a Rune Pouch varbit change would ever announce on
-			// its own (the varbits are the pouch's carried state, not its
-			// presence), so this is flagged dirty the same way a genuine
-			// varbit change is, and re-read defensively on the next tick
-			// (see playerOwnsRunePouch/readRunePouchItems) rather than
-			// only trusting onVarbitChanged below.
+			// Picking up or dropping a Rune Pouch changes ownership without any pouch
+			// varbit changing, so re-read it on the next tick.
 			runePouchDirty = true;
 		}
 		else if (containerId == InventoryID.WORN)
@@ -1465,60 +905,20 @@ public class MyscapePlugin extends Plugin
 		}
 		else
 		{
-			// The Master Scroll Book was the reason this branch used to
-			// carry a temporary diagnostic -- confirmed by that
-			// diagnostic to genuinely never fire ItemContainerChanged at
-			// all (see bookOfScrollsDumpPending's field doc below for the
-			// full story), so there's nothing left here to catch.
+			// Not a container this plugin tracks.
 			return false;
 		}
 
 		return true;
 	}
 
-	/** Fires the moment a kill/clue-casket/pickpocket hands over loot --
-	 * published by RuneLite's own bundled "Loot Tracker" core plugin
-	 * (net.runelite.client.plugins.loottracker), not a raw game-state
-	 * event -- the same integration point real third-party loot-logging
-	 * plugins use rather than reimplementing NPC-death loot detection
-	 * from scratch (diffing ground items around a death tile, handling
-	 * despawn timers, multi-target loot, ...), which is exactly why
-	 * that's the dependency here too. Requires RuneLite's bundled Loot
-	 * Tracker plugin to stay enabled -- if the player has turned it off,
-	 * this event simply never fires, same as any other plugin that
-	 * depends on it.
-	 *
-	 * Unlike bank/inventory/equipment/potion storage/rune pouch above,
-	 * a loot event isn't "current state" to snapshot and debounce -- it's
-	 * a discrete thing that already happened, so this builds and sends
-	 * it immediately (via panel#syncLootInBackground) rather than
-	 * folding it into scheduleSyncDebounced. See LootEvent's docstring
-	 * in the Mootrius/myscape repo's app/models.py for the full
-	 * rationale, including why each event carries its own
-	 * client-generated id.
-	 *
-	 * event.getType() is RuneLite's own LootRecordType (NPC/PLAYER/
-	 * EVENT/PICKPOCKET/UNKNOWN) -- passed through by name rather than
-	 * switched on, so a value this code doesn't specifically know about
-	 * still syncs correctly instead of being silently dropped. Every
-	 * clue casket comes through with event.getName() as the bare word
-	 * "Casket", no tier -- a real limitation of this event (RuneLite's
-	 * own internal attempt to tier it reads from a reward-interface
-	 * item container this plugin can't confirm still populates on every
-	 * casket open in current-day OSRS, and empirically it's this bare
-	 * "Casket" name that actually arrives here, every time). Rather
-	 * than lose the tier entirely, this plugin does its own detection
-	 * off the chatbox's own completion line instead -- see
-	 * pendingClueTier's own comment and onChatMessage's
-	 * CLUE_SCROLL_PATTERN handling below -- and relabels a "Casket"
-	 * event to "Clue Scroll (<Tier>)" right here, the moment one is
-	 * still pending, before this event is ever built or sent; nothing
-	 * downstream (app/loot.py server-side) needs to know this
-	 * relabeling happens at all, it just sees a properly tiered
-	 * source_name that was never actually "Casket" to begin with.
-	 * combatLevel is -1 for anything without one (a casket, a
-	 * pickpocket target) -- translated to null below rather than
-	 * synced as a fake level. */
+	/**
+	 * Handles loot published by RuneLite's Loot Tracker plugin, which must stay enabled.
+	 * Each event is sent immediately (panel#syncLootInBackground), not debounced. The
+	 * type is passed through by name so unknown types still sync. Clue caskets arrive as
+	 * "Casket" with no tier, so the tier from the chat line (see pendingClueTier) is
+	 * applied here. A combat level of -1 means none and is sent as null.
+	 */
 	@Subscribe
 	public void onLootReceived(LootReceived event)
 	{
@@ -1547,12 +947,8 @@ public class MyscapePlugin extends Plugin
 			items.add(new MyscapeClient.LootEventItem(entry.getKey(), resolveItemName(entry.getKey()), entry.getValue()));
 		}
 
-		// See pendingClueTier's own comment: a "Casket" event this close
-		// behind a "You have completed N <tier> Treasure Trails." chat
-		// line IS that clue's own reward, so it gets tagged with the
-		// tier here instead of going out as the bare, tier-less
-		// "Casket" name -- one-shot (cleared immediately below) so a
-		// later, unrelated casket open can never inherit a stale tier.
+		// A Casket event shortly after a clue completion line is that clue's reward.
+		// The tier is cleared immediately so it cannot go stale.
 		String sourceName = event.getName();
 		if ("EVENT".equals(event.getType().name()) && CASKET_EVENT_NAME.equals(sourceName)
 			&& pendingClueTier != null
@@ -1574,115 +970,41 @@ public class MyscapePlugin extends Plugin
 		panel.syncLootInBackground(lootEvent);
 	}
 
-	// Set (on the client thread, from onChatMessage's CLUE_SCROLL_PATTERN
-	// handling below) the moment a "You have completed N <tier> Treasure
-	// Trails." chatbox line is seen -- the capitalized tier name
-	// ("Hard"), or null when there's no clue completion still waiting to
-	// be paired with its own casket-opening LootReceived event. Read
-	// (and unconditionally cleared) the next time onLootReceived sees a
-	// "Casket" event, using pendingClueTierTick below to decide whether
-	// it's still fresh enough to trust -- see onLootReceived's own
-	// comment for why this pairing happens there rather than acting on
-	// the chat line alone (the chat line carries a tier but no items;
-	// only the paired LootReceived event carries the actual reward
-	// items to attach that tier to).
+	// Tier (e.g. "Hard") from the "You have completed N <tier> Treasure Trails." chat
+	// line, waiting for the matching Casket loot event (the chat line has no items).
 	private volatile String pendingClueTier;
 
-	// The client tick (see client.getTickCount()) pendingClueTier was
-	// last set on -- compared against the current tick in
-	// onLootReceived, not just checked for non-null, so a "Casket"
-	// event that shows up long after some earlier, already-stale clue
-	// completion message (the player opened a DIFFERENT casket later,
-	// say) can't wrongly inherit that old tier.
+	// Tick on which pendingClueTier was set, used to reject a stale tier.
 	private int pendingClueTierTick;
 
-	// How many client ticks (~0.6s each) a pending clue tier (see
-	// pendingClueTier above) stays valid for pairing with the next
-	// Casket LootReceived event -- generous enough to cover ordinary
-	// client/network jitter between the chat line and the loot event
-	// landing (both fire off the same single "open casket" action, so
-	// in practice they land the same tick or the next one), tight
-	// enough that ambling off and opening some other casket minutes
-	// later can't accidentally inherit a leftover tier.
+	// Maximum ticks (~0.6s each) between the clue chat line and its Casket loot event.
 	private static final int CLUE_TIER_MAX_TICK_GAP = 5;
 
-	// The exact, bare event name RuneLite's own bundled Loot Tracker
-	// plugin gives every clue casket open (see onLootReceived's own
-	// comment) -- kept as a named constant here (rather than an inline
-	// literal) purely so onLootReceived's own tier-relabeling check and
-	// this comment can't silently drift apart from each other.
 	private static final String CASKET_EVENT_NAME = "Casket";
 
-	/** Matches a chatbox kill-count announcement ("Your Zulrah kill
-	 * count is: 1,234.", "Your subdued Duke Sucellus count is: 12.",
-	 * "Your completed Chambers of Xeric count is: 30.", "Your
-	 * completion count for Tempoross is: 50.", etc.) -- byte-for-byte
-	 * the same KILLCOUNT_PATTERN RuneLite's own core
-	 * ChatCommandsPlugin uses for its !kc chat command (confirmed
-	 * against RuneLite's GitHub source,
-	 * runelite-client/.../chatcommands/ChatCommandsPlugin.java), so
-	 * this plugin doesn't need its own per-boss wording list -- every
-	 * boss/activity's phrasing RuneLite itself recognizes is already
-	 * covered by this one pattern. The boss name is forwarded to
-	 * myscape.io exactly as matched (see onChatMessage below); any
-	 * renaming/normalization (e.g. "Barrows chest" -> "Barrows
-	 * Chests", mirroring KILLCOUNT_RENAMES in RuneLite's own
-	 * ChatCommandsPlugin) happens server-side -- see
-	 * CHAT_NAME_OVERRIDES in app/bosses.py in the Mootrius/myscape
-	 * repo -- so this plugin stays free of its own copy of that table
-	 * to keep in sync as RuneLite adds bosses. */
-	// The game's own line when a collection log slot unlocks (shown when
-	// the in-game "collection log new addition notification" is on).
-	// Matched against the message with its color tags already stripped.
+	// Line printed when a collection log slot unlocks. Matched after colour tags are stripped.
 	private static final Pattern COLLECTION_LOG_ITEM_PATTERN =
 		Pattern.compile("New item added to your collection log:\\s*(.+)");
 
-	/** Matches the chatbox line the game itself prints the instant a
-	 * Treasure Trail is completed ("You have completed 15 hard Treasure
-	 * Trails."), used to detect a clue casket's tier (see
-	 * pendingClueTier's own comment above and onLootReceived, where the
-	 * tier this captures actually gets attached to that casket's loot
-	 * event) since RuneLite's own LootReceived event never carries one
-	 * (see onLootReceived's own docstring). Byte-for-byte the same
-	 * CLUE_SCROLL_PATTERN RuneLite's own bundled Loot Tracker plugin
-	 * uses internally for its own (here, unconfirmed-reliable) tiering
-	 * attempt (net.runelite.client.plugins.loottracker.
-	 * LootTrackerPlugin), just with the tier group loosened to
-	 * [a-zA-Z]+ rather than assumed-lowercase [a-z]+ -- this plugin
-	 * capitalizes the captured word itself (see onChatMessage below)
-	 * rather than trust the exact casing the live chat line happens to
-	 * use. */
+	/**
+	 * Chat line printed when a Treasure Trail is completed. Based on Loot Tracker's
+	 * CLUE_SCROLL_PATTERN, with a looser tier group that is capitalized in onChatMessage.
+	 */
 	private static final Pattern CLUE_SCROLL_PATTERN =
 		Pattern.compile("You have completed [0-9,]+ ([a-zA-Z]+) Treasure Trails?\\.");
 
+	// Same pattern as RuneLite's ChatCommandsPlugin KILLCOUNT_PATTERN, e.g.
+	// "Your Zulrah kill count is: 1,234." Boss names are forwarded as matched and any
+	// renaming is done server-side.
 	private static final Pattern KILLCOUNT_PATTERN = Pattern.compile(
 		"Your (?<pre>completion count for |subdued |completed )?(?:<col=[0-9a-f]{6}>)?(?<boss>.+?)(?:</col>)? (?<post>(?:(?:kill|harvest|lap|completion|success|Total Ticket) )?(?:count )?)is: ?<col=[0-9a-f]{6}>(?<kc>[0-9,]+)</col>");
 
-	/** This plugin's whole source of live kill-count data -- see the
-	 * Mootrius/myscape repo's app/routers/linking.py (fetches an
-	 * OSRS-hiscores baseline once, the moment a character links or
-	 * re-links) and app/hiscores.py::apply_kill_count_updates (applies
-	 * what this method reports) for the other half of the design. No
-	 * interval polling anywhere in this plugin: every kill count is
-	 * either that one link-time baseline or a reading straight out of
-	 * the chatbox the instant the game itself announces it, which is
-	 * as fresh and authoritative as a number can be -- see
-	 * KILLCOUNT_PATTERN's own comment for where the regex came from.
-	 *
-	 * GAMEMESSAGE/SPAM are the two ChatMessageTypes a kill-count line
-	 * actually arrives as (same two RuneLite's own ChatCommandsPlugin
-	 * checks for this case -- it also allows TRADE and
-	 * FRIENDSCHATNOTIFICATION, but those back a different feature of
-	 * its own, parsing *other* players' broadcast chat, which has no
-	 * equivalent here).
-	 *
-	 * KILLCOUNT_PATTERN is written loosely enough to also match a
-	 * handful of unrelated "Your ... is: <number>" chat lines that
-	 * aren't actually a kill-count report -- pre/post both being empty
-	 * is how RuneLite's own ChatCommandsPlugin tells those apart (see
-	 * its onChatMessage), so this mirrors that same guard rather than
-	 * risking a false positive getting synced as some boss's kill
-	 * count. */
+	/**
+	 * Parses chat lines: kill counts, collection log unlocks and clue completions.
+	 * Only GAMEMESSAGE and SPAM are checked, as in ChatCommandsPlugin. KILLCOUNT_PATTERN
+	 * also matches unrelated "Your ... is: n" lines, which are rejected when both
+	 * pre and post are empty, as ChatCommandsPlugin does.
+	 */
 	@Subscribe
 	public void onChatMessage(ChatMessage event)
 	{
@@ -1696,13 +1018,9 @@ public class MyscapePlugin extends Plugin
 			return;
 		}
 
-		// A new collection log slot just unlocked: the full per-item
-		// capture only runs when the player opens the in-game log, so
-		// send this one item by name right away (the server adds it to
-		// what it already has). latestCollectionLogItems is dropped so
-		// the debounced sync can't later re-send a full list captured
-		// BEFORE this item and overwrite the addition -- the next real
-		// capture (opening the log) sets it again.
+		// A new collection log slot unlocked. Send the item by name now, since the full
+		// capture only runs when the log is opened. Clearing latestCollectionLogItems stops
+		// a debounced sync from overwriting this addition with an older full list.
 		Matcher collectionLogMatcher = COLLECTION_LOG_ITEM_PATTERN.matcher(Text.removeTags(event.getMessage()));
 		if (collectionLogMatcher.find())
 		{
@@ -1715,9 +1033,6 @@ public class MyscapePlugin extends Plugin
 			return;
 		}
 
-		// See pendingClueTier's own comment -- this only ever records a
-		// tier for onLootReceived's own "Casket" event to pick up right
-		// after; it doesn't sync anything by itself.
 		Matcher clueMatcher = CLUE_SCROLL_PATTERN.matcher(event.getMessage());
 		if (clueMatcher.find())
 		{
@@ -1761,72 +1076,27 @@ public class MyscapePlugin extends Plugin
 		panel.syncKillCountInBackground(boss, killCount);
 	}
 
-	// Set (on the client thread, from onVarbitChanged below) the moment
-	// one of Potion Storage's own varps fires, and consumed on the next
-	// onGameTick rather than acted on immediately -- deferring by one
-	// tick mirrors how RuneLite's own bundled Bank Tags plugin handles
-	// the exact same varps (it defers to the next client tick before
-	// rebuilding), rather than assuming it's safe to read Potion
-	// Storage's backing script state mid-event. Both the write (here)
-	// and the read (onGameTick) only ever happen on the client thread,
-	// so this needs no synchronization of its own.
+	// Set when a Potion Storage varp fires and handled on the next game tick, as Bank
+	// Tags does, rather than reading script state mid-event. Client thread only.
 	private boolean potionStorageDirty;
 
-	// How many ticks it's been since Potion Storage was last actually
-	// re-read (by either path -- the dirty flag above or this counter
-	// hitting its own interval), reset to 0 by both. Only ever touched
-	// from onGameTick, on the client thread, same as potionStorageDirty.
-	// See POTION_STORAGE_REFRESH_INTERVAL_TICKS's own comment for why
-	// this periodic fallback exists at all.
 	private int ticksSincePotionStorageRefresh;
 
-	// Same deal, for a Rune Pouch's contents -- also set directly from
-	// onItemContainerChanged above (see its comment) when the pouch's
-	// own presence in the inventory could have changed, not just when
-	// this listener below observes it.
+	// Rune Pouch contents or ownership may have changed. Also set from applyContainerSnapshot.
 	private boolean runePouchDirty;
 
-	// Same deal, for skills -- set from onStatChanged below, which fires
-	// once per skill on login (as every skill's real value first becomes
-	// known) and again any time a skill's xp/level actually changes,
-	// deliberately NOT any time its BOOSTED level alone changes (a
-	// potion/prayer wearing off shouldn't trigger a resync -- see
-	// onStatChanged's own comment).
 	private boolean skillsDirty;
 
-	// Same deal, for completed quests -- set from onWidgetLoaded below
-	// when the "quest complete" scroll interface loads, the one reliable
-	// generic signal that SOME quest just finished (there's no single
-	// varp/varbit that changes for every quest the way there is for
-	// bank/potion storage/rune pouch above -- each quest tracks its own
-	// completion in its own varps, which is exactly what
-	// Quest#getState reads per-quest, not something this plugin
-	// duplicates here).
+	// Set when the quest complete scroll loads. No single varbit signals every quest.
 	private boolean questsDirty;
 
-	// Same deal, for achievement diary tiers -- set from onVarbitChanged
-	// below when one of the 48 diary "tier complete" varbits themselves
-	// changes (see DIARY_VARBIT_IDS), unlike quests above where no single
-	// generic signal exists.
 	private boolean diariesDirty;
 
-	// Same deal, for combat achievements -- set from onVarbitChanged
-	// below when one of the six COMBAT_ACHIEVEMENT_COMPLETED_VARBITS
-	// changes. Consumed by patchCombatAchievementStats below, which only
-	// ever patches combatTasksCompleted, never combatTasksTotal -- unlike
-	// the 48 diary varbits (a fixed, essentially-never-changing count of
-	// 48 tiers total) there's no equivalent "how many combat tasks exist
-	// in total" varbit, and that number genuinely does grow as Jagex
-	// adds new bosses/tasks, so combatTasksTotal is left alone here and
-	// only ever updated by the Character Summary panel read
-	// (readCharacterSummary) the way it always was.
+	// Set when a combat achievement varbit changes. Only combatTasksCompleted is patched
+	// live; the total has no varbit, so it comes from the Character Summary read.
 	private boolean combatAchievementsDirty;
 
-	// Same deal, for the collection log -- set from onVarbitChanged below
-	// when VarPlayerID.COLLECTION_COUNT or COLLECTION_COUNT_MAX itself
-	// changes. Unlike combat achievements above, both completed AND
-	// total have their own live varp here, so patchCollectionStats below
-	// patches both fields together.
+	// Set when the collection log count varps change. Both completed and total have varps.
 	private boolean collectionsDirty;
 
 	@Subscribe
@@ -1861,25 +1131,13 @@ public class MyscapePlugin extends Plugin
 		}
 	}
 
-	/** Fires the moment the collection log widget's own setup script
-	 * runs -- both the first time a player opens it this session and
-	 * (as a side effect of collectionLogItemCapture's own re-trigger)
-	 * every time after, so collectionLogItemCapture itself is what
-	 * tells those two cases apart (see its onCollectionLogOpened doc).
-	 * This is the entry point for the whole per-item obtained/quantity
-	 * capture -- see collectionLogItemCapture's own class doc for why
-	 * this can't just be read passively the way structure
-	 * (CollectionLogSchemaExporter) can. */
+	/** Entry point for the per-item collection log capture. Fires when the log's setup script runs. */
 	@Subscribe
 	public void onScriptPostFired(ScriptPostFired event)
 	{
 		collectionLogItemCapture.onCollectionLogOpened(event.getScriptId(), client);
 	}
 
-	/** Fires once per obtained collection log item, as a result of
-	 * onScriptPostFired's own triggered refresh above -- see
-	 * collectionLogItemCapture's own onScriptPreFired doc for the
-	 * script id/argument shape. */
 	@Subscribe
 	public void onScriptPreFired(ScriptPreFired event)
 	{
@@ -1887,43 +1145,18 @@ public class MyscapePlugin extends Plugin
 			event.getScriptId(), event.getScriptEvent().getArguments(), client);
 	}
 
-	/** Fires once per skill the instant its xp, real level, or boosted
-	 * level changes -- including, notably, a temporary boost/drain from a
-	 * potion or prayer alone, with xp/real level unchanged. Only THOSE
-	 * two (xp or real level) actually moving is worth a resync (a skill
-	 * goal tracks real progress, never a transient boost -- see
-	 * readSkills' own comment), but this still marks skillsDirty on every
-	 * firing rather than filtering here: readSkills re-reads all 24
-	 * skills in one pass regardless of which one changed, so a spurious
-	 * boost-only firing costs nothing beyond scheduling a debounce that
-	 * (correctly) resends the exact same numbers as last time. */
+	/** Boost-only changes are not filtered out; readSkills re-reads every skill and the resend is harmless. */
 	@Subscribe
 	public void onStatChanged(StatChanged event)
 	{
 		skillsDirty = true;
 	}
 
-	/** Fires whenever any game interface loads -- checked here for
-	 * specifically the "quest complete" scroll (InterfaceID.QUESTSCROLL,
-	 * RuneLite's own named id for it), the interface OSRS shows the
-	 * instant a quest is finished. This is the trigger for WHEN to
-	 * recheck, not the data itself -- readCompletedQuestNames (via
-	 * Quest#getState) is what actually determines which quests are done,
-	 * same division of labor as onVarbitChanged/readDiaryTiers below.
-	 *
-	 * Also sets masterScrollBookDirty the moment
-	 * InterfaceID.BOOKOFSCROLLS loads -- see that field's own comment
-	 * and readMasterScrollBookItems below for why this is the only
-	 * signal available for the Master Scroll Book, unlike every other
-	 * source in this file.
-	 *
-	 * Also queues an explicit re-read of whichever ItemContainer(s)
-	 * back the interface that just loaded, for every "check it" widget
-	 * VIRTUAL_STORAGE_WIDGET_CONTAINER_IDS (or, for the Cargo Hold, the
-	 * boat-slot branch below) knows about -- see
-	 * pendingContainerRereadTicks' own field doc for the empty-storage
-	 * bug this exists to fix, and onGameTick below for where the actual
-	 * re-read happens. */
+	/**
+	 * Flags a quest re-check when the quest complete scroll loads (only the trigger;
+	 * Quest#getState provides the data). Also flags the Master Scroll Book and Character
+	 * Summary reads and queues virtual storage re-reads (see pendingContainerRereadTicks).
+	 */
 	@Subscribe
 	public void onWidgetLoaded(WidgetLoaded event)
 	{
@@ -1948,14 +1181,8 @@ public class MyscapePlugin extends Plugin
 		}
 		else if (groupId == InterfaceID.SAILING_BOAT_CARGOHOLD || groupId == InterfaceID.SAILING_BOAT_CARGOHOLD_SIDE)
 		{
-			// Whichever boat this was, its cargo hold shares this one
-			// interface with the other four (see
-			// VIRTUAL_STORAGE_WIDGET_CONTAINER_IDS' own field doc) --
-			// there's nothing on this event that says which container id
-			// is actually backing it this time, so all five get queued
-			// and onGameTick below simply finds nothing to read (client.
-			// getItemContainer returns null) for whichever four aren't
-			// the one that was just opened.
+			// All five boat slots share this interface and the event does not say which one
+			// is open, so queue all five. onGameTick skips those that return null.
 			queueContainerReread(InventoryID.SAILING_BOAT_1_CARGOHOLD);
 			queueContainerReread(InventoryID.SAILING_BOAT_2_CARGOHOLD);
 			queueContainerReread(InventoryID.SAILING_BOAT_3_CARGOHOLD);
@@ -1964,35 +1191,17 @@ public class MyscapePlugin extends Plugin
 		}
 	}
 
-	/** Queues `containerId` to be explicitly re-read (see
-	 * applyContainerSnapshot) on the next tick strictly after this one
-	 * -- see pendingContainerRereadTicks' own field doc for why this
-	 * exists and why it waits a tick rather than reading immediately. */
 	private void queueContainerReread(int containerId)
 	{
 		pendingContainerRereadTicks.put(containerId, client.getTickCount());
 	}
 
-	/** Reads the Master Scroll Book's contents straight off
-	 * InterfaceID.BOOKOFSCROLLS' own widgets -- the only source in this
-	 * file that isn't a RuneLite ItemContainer (see this field's
-	 * MyscapeClient.java comment for the two rounds of diagnostics that
-	 * confirmed that). A live widget dump showed a consistent pattern
-	 * across all 20 teleport scrolls this interface holds, including
-	 * the several whose child component ids don't follow the tidy
-	 * TELEPORTSCROLL_X/GFX_X/TEXT_X/TITLE_X stride RuneLite's own
-	 * gameval constants suggest (Cerberus, Revenants, Watson, Guthixian
-	 * Temple are numbered irregularly): whichever widget actually
-	 * carries a real itemId is immediately followed by a sibling widget
-	 * whose text is the held quantity as a plain integer ("0" for a
-	 * scroll type never deposited), then one more sibling whose text is
-	 * the scroll's display name. Walking every child by id and matching
-	 * that adjacency avoids hardcoding 20 irregular id triples by hand.
-	 * A quantity of 0 is skipped, same as an empty/untouched slot
-	 * anywhere else in this file (see aggregateQuantities' own
-	 * comment). Display names sometimes carry a stray "<br>" from the
-	 * interface's own line-wrapping (e.g. "Arde-<br>aglais") -- stripped
-	 * here rather than synced verbatim. */
+	/**
+	 * Reads the Master Scroll Book from its widgets (it has no ItemContainer). A widget
+	 * with an item id is followed by siblings holding the quantity and the display name.
+	 * Child ids are irregular, so the loop matches on adjacency. Zero quantities are
+	 * skipped and stray "<br>" is stripped from names.
+	 */
 	private List<MyscapeClient.MasterScrollBookItem> readMasterScrollBookItems()
 	{
 		List<MyscapeClient.MasterScrollBookItem> items = new ArrayList<>();
@@ -2028,18 +1237,9 @@ public class MyscapePlugin extends Plugin
 		return items;
 	}
 
-	// The dynamic-child index each Character Summary stat's value text
-	// sits at, confirmed with a live widget dump (Widget Inspector) of
-	// InterfaceID.AccountSummarySidepanel.SUMMARY_CONTENTS while the
-	// "Character Summary" tab was open -- 100 dynamic children total
-	// (this panel draws every skill/diary-area/CA-tier icon too, not
-	// just these seven), spaced roughly 12-13 apart in a consistent
-	// per-stat block. Nothing else on the panel identifies which row is
-	// which without also parsing icon sprite ids, so these are
-	// hardcoded rather than searched for. A future game update that
-	// reshuffles this layout will show up as readCharacterSummary
-	// returning null (a missing/mismatched widget) rather than a wrong
-	// number -- see that method's own comment.
+	// Dynamic-child index of each Character Summary stat's value text (found with the
+	// Widget Inspector on SUMMARY_CONTENTS). If a game update changes the layout,
+	// readCharacterSummary returns null instead of a wrong number.
 	private static final int SUMMARY_INDEX_COMBAT_LEVEL = 11;
 	private static final int SUMMARY_INDEX_TOTAL_LEVEL = 24;
 	private static final int SUMMARY_INDEX_TOTAL_XP = 36;
@@ -2048,17 +1248,7 @@ public class MyscapePlugin extends Plugin
 	private static final int SUMMARY_INDEX_COMBAT_TASKS = 75;
 	private static final int SUMMARY_INDEX_COLLECTIONS = 88;
 
-	/** Reads the seven Character Summary stats (see
-	 * MyscapeClient.CharacterSummaryItem's own doc for what each one
-	 * means and why questsCompleted/questsTotal stands in for quest
-	 * points) straight off InterfaceID.AccountSummarySidepanel's dynamic
-	 * children -- see the SUMMARY_INDEX_* constants above for how those
-	 * fixed indices were confirmed. Returns null wholesale rather than a
-	 * partially-filled result if the panel isn't currently open (its
-	 * widget won't exist) or any single expected value fails to parse --
-	 * a null here is exactly what characterSummaryRereadTicksLeft's onGameTick
-	 * handler treats as "nothing new to sync this round", same as every
-	 * other read* method returning an empty/unchanged result. */
+	/** Reads the seven Character Summary stats. Returns null if the panel is closed or parsing fails. */
 	private MyscapeClient.CharacterSummaryItem readCharacterSummary()
 	{
 		Widget contents = client.getWidget(InterfaceID.AccountSummarySidepanel.SUMMARY_CONTENTS);
@@ -2092,31 +1282,17 @@ public class MyscapePlugin extends Plugin
 			achievements[0], achievements[1],
 			combatTasks[0], combatTasks[1],
 			collections[0], collections[1],
-			// Per-tier combat achievement counts aren't shown on this
-			// panel at all (just the combatTasks fraction above), so
-			// this baseline read has nothing to put here -- zeroed out
-			// and left for patchCombatAchievementStats (which runs
-			// moments later off the same onGameTick pass, see
-			// combatAchievementsDirty's own doc) to fill in for real,
-			// same as this field's own doc describes.
+			// Per-tier combat achievement counts are not shown on this panel. They are left
+			// zeroed and filled in by patchCombatAchievementStats.
 			new int[COMBAT_ACHIEVEMENT_COMPLETED_VARBITS.length],
-			// Unlike every field above, this one has nothing to do with
-			// the Character Summary panel at all -- it's a straight
-			// varbit read, always available once the client itself is
-			// logged in, so there's no reason to leave it for a later
-			// patch* call the way combat achievement tiers above are.
 			readAccountType());
 	}
 
-	/** client.getVarbitValue(Varbits.ACCOUNT_TYPE) (0-6) mapped to the
-	 * seven account type codes the Mootrius/myscape server expects (see
-	 * GameAccount.account_type's own comment in that repo's app/models.py)
-	 * -- straight off Varbits.ACCOUNT_TYPE's own javadoc in runelite-api,
-	 * NOT the deprecated Client#getAccountType()/AccountType enum, which
-	 * only has 6 values and can't tell an unranked group ironman apart
-	 * from a normal account at all (see runelite/runelite#16510). Falls
-	 * back to "MAIN" for any value this enum doesn't recognize, same as
-	 * every account not otherwise marked is just a normal account. */
+	/**
+	 * Maps Varbits.ACCOUNT_TYPE (0-6) to the account type codes used by myscape.io.
+	 * Client#getAccountType is not used because it cannot distinguish an unranked
+	 * group ironman (runelite/runelite#16510). Unknown values map to "MAIN".
+	 */
 	private String readAccountType()
 	{
 		switch (client.getVarbitValue(Varbits.ACCOUNT_TYPE))
@@ -2138,19 +1314,12 @@ public class MyscapePlugin extends Plugin
 		}
 	}
 
-	/** children[index], or null if index is out of bounds -- guards
-	 * readCharacterSummary above against a future layout with fewer
-	 * dynamic children than SUMMARY_INDEX_COLLECTIONS expects. */
 	private static Widget summaryChild(Widget[] children, int index)
 	{
 		return index >= 0 && index < children.length ? children[index] : null;
 	}
 
-	/** Strips a Character Summary widget's RuneScape colour markup
-	 * (e.g. "<col=0dc10d>126.1</col>") and parses what's left as a
-	 * decimal -- used only for Combat Level, the one stat this panel
-	 * shows with a fractional part (see COMBAT_LEVEL_DECIMAL_ENABLED
-	 * client-side). */
+	/** Parses a widget's text, minus colour markup, as a decimal (used for Combat Level). */
 	private static Double parseSummaryDecimal(Widget widget)
 	{
 		if (widget == null || widget.getText() == null)
@@ -2168,10 +1337,6 @@ public class MyscapePlugin extends Plugin
 		}
 	}
 
-	/** Strips everything but digits from a Character Summary widget's
-	 * text (colour markup, a "Total XP: " label prefix, thousands
-	 * commas) and parses what's left as an int -- used for Total
-	 * Level. */
 	private static Integer parseSummaryInt(Widget widget)
 	{
 		if (widget == null || widget.getText() == null)
@@ -2193,9 +1358,7 @@ public class MyscapePlugin extends Plugin
 		}
 	}
 
-	/** Same as parseSummaryInt just above, but as a long -- used for
-	 * Total XP, whose value ("Total XP: <col=...>503,004,594</col>")
-	 * can exceed Integer.MAX_VALUE for a sufficiently played account. */
+	/** Like parseSummaryInt but as a long, since Total XP can exceed Integer.MAX_VALUE. */
 	private static Long parseSummaryLong(Widget widget)
 	{
 		if (widget == null || widget.getText() == null)
@@ -2217,10 +1380,7 @@ public class MyscapePlugin extends Plugin
 		}
 	}
 
-	/** Parses a Character Summary "X/Y" completion-count widget (Quests
-	 * Completed, Achievements Completed, Combat Tasks Completed,
-	 * Collections Logged all share this exact format) into a
-	 * {completed, total} pair, after stripping colour markup. */
+	/** Parses an "X/Y" widget into {X, Y} after stripping colour markup. */
 	private static int[] parseSummaryFraction(Widget widget)
 	{
 		if (widget == null || widget.getText() == null)
@@ -2243,26 +1403,10 @@ public class MyscapePlugin extends Plugin
 		}
 	}
 
-	/** Rebuilds latestCharacterSummary with just the field(s) one of the
-	 * patchXStats methods below actually has fresh data for, copying
-	 * everything else across unchanged from whatever was last known (the
-	 * most recent full readCharacterSummary above, or a previous patch)
-	 * -- CharacterSummaryItem's fields are all primitive and required
-	 * (see its own doc), so there's no way to send a partial "some
-	 * fields still unknown" summary to the server. A first successful
-	 * readCharacterSummary -- i.e. the player opening the Character
-	 * Summary tab at least once this session -- is what establishes the
-	 * baseline these live updates patch onto; a null latestCharacterSummary
-	 * means that baseline doesn't exist yet, so this is simply a no-op
-	 * until it does. From that point on, patchXStats calls below can
-	 * arrive in any order within the same onGameTick pass (multiple
-	 * dirty flags firing on the same tick, e.g. a quest that also grants
-	 * xp) and still converge correctly, since each only ever overwrites
-	 * its own field(s) and carries every other field forward untouched.
-	 * Must only ever be called from the client thread -- every call site
-	 * below already is (onGameTick), matching the same single-writer
-	 * assumption latestCharacterSummary's own volatile already relies on
-	 * (see its field doc). */
+	/**
+	 * Rebuilds latestCharacterSummary with the fields the caller has fresh data for. A
+	 * no-op until readCharacterSummary has established a baseline. Client thread only.
+	 */
 	private void patchCharacterSummary(UnaryOperator<MyscapeClient.CharacterSummaryItem> patch)
 	{
 		MyscapeClient.CharacterSummaryItem current = latestCharacterSummary;
@@ -2274,25 +1418,10 @@ public class MyscapePlugin extends Plugin
 		scheduleSyncDebounced();
 	}
 
-	/** Patches combatLevel/totalLevel/totalXp onto latestCharacterSummary
-	 * from the skills data skillsDirty's onGameTick handler just read,
-	 * independent of whether the Character Summary panel has ever been
-	 * opened this session (compare readCharacterSummary above, which
-	 * needs that panel open). Combat level comes straight from
-	 * RuneLite's own Player#getCombatLevel -- it already computes the
-	 * real combat formula, no reason to duplicate it here -- as a plain
-	 * integer rather than the panel's own optional decimal-precision
-	 * display (e.g. 126 here vs. that panel's own "126.1"), which is
-	 * fine: the website already rounds this to a whole number either
-	 * way (see render_character_overview's own comment in the Mootrius/
-	 * myscape repo's app/pages.py). Total level is the sum of all 24
-	 * real (unboosted) skill levels, and total XP the sum of all 24
-	 * skills' xp, both off latestSkillItems -- the exact same read
-	 * readSkills just produced, so these three always agree with
-	 * whatever skills the server is about to receive in the very same
-	 * sync. See patchCharacterSummary's own doc for why this only does
-	 * anything once a first Character Summary read has already
-	 * established a baseline. */
+	/**
+	 * Patches combat level, total level and total XP from the latest skills, without
+	 * needing the Character Summary panel open.
+	 */
 	private void patchCombatAndTotalStats()
 	{
 		if (latestSkillItems == null || client.getLocalPlayer() == null)
@@ -2307,10 +1436,6 @@ public class MyscapePlugin extends Plugin
 			totalXp += item.xp;
 		}
 		double combatLevel = client.getLocalPlayer().getCombatLevel();
-		// Lambdas below can only capture effectively-final locals, so
-		// totalLevel/totalXp (both accumulated in the loop above) need
-		// their own final copies -- combatLevel is already effectively
-		// final (a single assignment) and needs none.
 		final int finalTotalLevel = totalLevel;
 		final long finalTotalXp = totalXp;
 		patchCharacterSummary(prev -> new MyscapeClient.CharacterSummaryItem(
@@ -2323,13 +1448,6 @@ public class MyscapePlugin extends Plugin
 			prev.accountType));
 	}
 
-	/** Patches questsCompleted/questsTotal onto latestCharacterSummary
-	 * from latestCompletedQuestNames (just read by questsDirty's onGameTick
-	 * handler) and RuneLite's own full Quest enum -- like
-	 * patchCombatAndTotalStats above, this needs no Character Summary
-	 * panel open, unlike readCharacterSummary. See patchCharacterSummary's
-	 * own doc for why this is a no-op before a first panel read has ever
-	 * established a baseline this session. */
 	private void patchQuestStats()
 	{
 		if (latestCompletedQuestNames == null)
@@ -2348,20 +1466,10 @@ public class MyscapePlugin extends Plugin
 			prev.accountType));
 	}
 
-	/** Patches achievementsCompleted/achievementsTotal onto
-	 * latestCharacterSummary from latestDiaryTierItems (just read by
-	 * diariesDirty's onGameTick handler) -- each area's entry there is
-	 * its HIGHEST completed tier (see readDiaryTiers' own doc: a real
-	 * diary journal can't have Elite done without Easy/Medium/Hard also
-	 * done), so an area at "elite" counts as 4 completed tiers here, one
-	 * at "hard" counts as 3, and so on -- matching how the Character
-	 * Summary panel's own "Achievement diaries completed" count counts
-	 * individual tier completions, not areas. achievementsTotal is
-	 * DIARY_VARBIT_IDS.size() (48: 12 areas x 4 tiers) -- a genuinely
-	 * fixed number (new diary tiers are far rarer than new combat
-	 * achievements, see combatAchievementsDirty's own doc), safe to
-	 * derive here rather than needing the panel read the way
-	 * combatTasksTotal still does. */
+	/**
+	 * Patches the achievement counts from latestDiaryTierItems. An area's entry is its
+	 * highest tier, so "elite" counts as 4 completed tiers. The total is 12 areas x 4.
+	 */
 	private void patchDiaryStats()
 	{
 		if (latestDiaryTierItems == null)
@@ -2381,9 +1489,6 @@ public class MyscapePlugin extends Plugin
 			}
 		}
 		int total = DIARY_VARBIT_IDS.size();
-		// See patchCombatAndTotalStats's own comment on why this final
-		// copy is needed: completed is accumulated in the loop above, so
-		// it isn't effectively final on its own.
 		final int finalCompleted = completed;
 		patchCharacterSummary(prev -> new MyscapeClient.CharacterSummaryItem(
 			prev.combatLevel, prev.totalLevel, prev.totalXp,
@@ -2395,15 +1500,10 @@ public class MyscapePlugin extends Plugin
 			prev.accountType));
 	}
 
-	/** Patches combatTasksCompleted onto latestCharacterSummary by
-	 * summing COMBAT_ACHIEVEMENT_COMPLETED_VARBITS' six current values
-	 * directly -- never combatTasksTotal, which has no equivalent live
-	 * varbit and so is left exactly as the last Character Summary panel
-	 * read set it (see combatAchievementsDirty's own doc). Also patches
-	 * combatTaskTierCompleted with those same six values kept separate
-	 * (easy..grandmaster, same order as COMBAT_ACHIEVEMENT_COMPLETED_
-	 * VARBITS itself) -- Character Overview's combat achievements
-	 * section needs the per-tier breakdown, not just the sum. */
+	/**
+	 * Patches combatTasksCompleted and the per-tier counts. combatTasksTotal has no
+	 * varbit and keeps its last Character Summary value.
+	 */
 	private void patchCombatAchievementStats()
 	{
 		int completed = 0;
@@ -2414,8 +1514,6 @@ public class MyscapePlugin extends Plugin
 			tierCompleted[i] = value;
 			completed += value;
 		}
-		// See patchCombatAndTotalStats's own comment on why these final
-		// copies are needed.
 		final int finalCompleted = completed;
 		final int[] finalTierCompleted = tierCompleted;
 		patchCharacterSummary(prev -> new MyscapeClient.CharacterSummaryItem(
@@ -2428,20 +1526,10 @@ public class MyscapePlugin extends Plugin
 			prev.accountType));
 	}
 
-	/** Patches collectionsCompleted/collectionsTotal onto
-	 * latestCharacterSummary from VarPlayerID.COLLECTION_COUNT/
-	 * COLLECTION_COUNT_MAX directly -- unlike combat achievements above,
-	 * both completed AND total have their own live varp here (it's what
-	 * Jagex's own client uses to build the Character Summary panel's own
-	 * "Collections logged" line in the first place), so both fields get
-	 * patched together. A value of 0 for either is treated as "not
-	 * populated yet" rather than a real reading -- matching a similar
-	 * >0 guard in pajlads/DinkPlugin's own CollectionNotifier (a widely-
-	 * used third-party RuneLite plugin that reads these same two varps),
-	 * whose own comment notes this can read as unpopulated until the
-	 * player has had the Character Summary tab open at some point --
-	 * from then on, though, these two stay live without needing that tab
-	 * open again. */
+	/**
+	 * Patches the collection log counts from COLLECTION_COUNT and COLLECTION_COUNT_MAX.
+	 * A value of 0 is treated as not yet populated, as in DinkPlugin's CollectionNotifier.
+	 */
 	private void patchCollectionStats()
 	{
 		int completed = client.getVarpValue(VarPlayerID.COLLECTION_COUNT);
@@ -2460,13 +1548,7 @@ public class MyscapePlugin extends Plugin
 			prev.accountType));
 	}
 
-	/** Whether varbitId is one of the 12 Rune Pouch type/quantity slot
-	 * varbits (see RUNE_POUCH_TYPE_VARBITS/RUNE_POUCH_QUANTITY_VARBITS) --
-	 * checked by exact id, not a min/max range like Potion Storage's
-	 * varps above, since these 12 ids are individual varbits (cache-
-	 * assigned, not necessarily contiguous with each other or exclusive
-	 * of unrelated varbits in between) rather than a dedicated
-	 * contiguous varp block. */
+	/** Whether varbitId is one of the 12 Rune Pouch varbits (not contiguous, so matched by exact id). */
 	private static boolean isRunePouchVarbit(int varbitId)
 	{
 		if (varbitId < 0)
@@ -2490,30 +1572,12 @@ public class MyscapePlugin extends Plugin
 		return false;
 	}
 
-	/** (Re)schedules the single shared debounce task -- shared across
-	 * bank/inventory/equipment/potion storage/rune pouch/looting bag/
-	 * seed vault/tackle box/PoH/Forestry Kit/Seed Box/Master Scroll
-	 * Book/skills/quests/diaries/collection log items rather than one
-	 * per source, since a player actively shopping or grinding typically touches more
-	 * than one of them in the same burst (withdrawing from the bank,
-	 * then equipping what they withdrew; training a skill while also
-	 * banking its product),
-	 * and there's no reason to send several separate requests a couple
-	 * of ticks apart for what's really one burst of activity. When it
-	 * fires, it syncs whichever of these have actually been observed at
-	 * least once (see the field docs above) -- reading only the
-	 * already-captured volatile snapshots, never the RuneLite Client
-	 * itself, since this runs on `executor`'s thread, not the client
-	 * thread.
-	 *
-	 * The delay itself shrinks as a single burst goes on: it's normally
-	 * the full SYNC_DEBOUNCE_SECONDS quiet period, but once the burst
-	 * that started at syncBurstStartMillis has been running for close to
-	 * SYNC_MAX_WAIT_SECONDS, the delay is clamped down so the task still
-	 * fires at that cap rather than waiting for a quiet moment that a
-	 * sustained activity (fighting, thieving, high alching) might not
-	 * give it for minutes. A short burst never notices the cap -- it
-	 * only bites once a burst has genuinely run long. */
+	/**
+	 * (Re)schedules the single debounce task shared by all sources. When it fires it
+	 * syncs whichever sources have been seen, reading only the captured snapshots since
+	 * it runs on the executor thread. The delay is clamped so a long burst still syncs
+	 * at SYNC_MAX_WAIT_SECONDS.
+	 */
 	private void scheduleSyncDebounced()
 	{
 		long now = System.currentTimeMillis();
@@ -2548,15 +1612,6 @@ public class MyscapePlugin extends Plugin
 			delaySeconds, TimeUnit.SECONDS);
 	}
 
-	/** Adds/removes the toolbar icon the instant the player flips "Show
-	 * sidebar" in the plugin's own config panel -- panel/navButton
-	 * themselves are always built in startUp() regardless (see its own
-	 * comment), so this never needs to touch anything but the
-	 * toolbar registration. A plain string match on the key name
-	 * rather than a shared constant, matching how the old apiBaseUrl
-	 * setting's keyName was never referenced outside its own config
-	 * annotation either -- there's only the one config value left in
-	 * this group to filter on. */
 	@Subscribe
 	public void onConfigChanged(ConfigChanged event)
 	{
@@ -2589,10 +1644,10 @@ public class MyscapePlugin extends Plugin
 		}
 	}
 
-	/** Sends the logged-in character's display name to myscape.io when it
-	 * differs from the last one the server accepted, so an in-game name
-	 * change updates the website automatically. Runs on the client
-	 * thread (from onGameTick); the HTTP call itself is async. */
+	/**
+	 * Sends the display name to myscape.io when it differs from the last one accepted.
+	 * Runs on the client thread; the HTTP call is async.
+	 */
 	private void reportRuneScapeNameIfChanged()
 	{
 		String name = currentRuneScapeName;
@@ -2614,10 +1669,8 @@ public class MyscapePlugin extends Plugin
 	@Subscribe
 	public void onGameTick(GameTick tick)
 	{
-		// The local player (and their display name) can take a tick or
-		// two to become available right after GameState flips to
-		// LOGGED_IN, so this keeps both cached values current rather
-		// than trying to capture them exactly once at login.
+		// The local player and name can take a tick or two to become available after
+		// GameState flips to LOGGED_IN, so keep both cached values current.
 		if (client.getGameState() == GameState.LOGGED_IN)
 		{
 			boolean justBecameAvailable = currentAccountHash == null;
@@ -2628,13 +1681,8 @@ public class MyscapePlugin extends Plugin
 				reportRuneScapeNameIfChanged();
 			}
 
-			// Either Potion Storage's own (tracked) varps fired since the
-			// last tick (see onVarbitChanged above -- read one tick later
-			// rather than inline there, per potionStorageDirty's field
-			// doc) or the periodic fallback interval has elapsed (see
-			// POTION_STORAGE_REFRESH_INTERVAL_TICKS's own doc for why
-			// that exists) -- either way, read Potion Storage's current
-			// contents now, on the client thread.
+			// Read Potion Storage one tick after a tracked varp fired (see potionStorageDirty)
+			// or when the periodic refresh interval has elapsed.
 			if (potionStorageDirty || ++ticksSincePotionStorageRefresh >= POTION_STORAGE_REFRESH_INTERVAL_TICKS)
 			{
 				potionStorageDirty = false;
@@ -2643,9 +1691,6 @@ public class MyscapePlugin extends Plugin
 				scheduleSyncDebounced();
 			}
 
-			// Same deal, for a Rune Pouch (see runePouchDirty's field doc
-			// for why this gets set, and readRunePouchItems for why it's
-			// re-read in full here rather than incrementally).
 			if (runePouchDirty)
 			{
 				runePouchDirty = false;
@@ -2653,11 +1698,6 @@ public class MyscapePlugin extends Plugin
 				scheduleSyncDebounced();
 			}
 
-			// Same deal, for skills (see skillsDirty's field doc). Also
-			// patches Character Overview's combatLevel/totalLevel/totalXp
-			// off this same read (see patchCombatAndTotalStats's own doc)
-			// -- independent of whether the Character Summary panel has
-			// ever been opened this session.
 			if (skillsDirty)
 			{
 				skillsDirty = false;
@@ -2666,9 +1706,6 @@ public class MyscapePlugin extends Plugin
 				patchCombatAndTotalStats();
 			}
 
-			// Same deal, for completed quests (see questsDirty's field
-			// doc). Also patches Character Overview's questsCompleted/
-			// questsTotal off this same read (see patchQuestStats).
 			if (questsDirty)
 			{
 				questsDirty = false;
@@ -2678,10 +1715,6 @@ public class MyscapePlugin extends Plugin
 				patchQuestStats();
 			}
 
-			// Same deal, for achievement diary tiers (see diariesDirty's
-			// field doc). Also patches Character Overview's
-			// achievementsCompleted/achievementsTotal off this same read
-			// (see patchDiaryStats).
 			if (diariesDirty)
 			{
 				diariesDirty = false;
@@ -2690,36 +1723,21 @@ public class MyscapePlugin extends Plugin
 				patchDiaryStats();
 			}
 
-			// Same deal, for combat achievements (see
-			// combatAchievementsDirty's field doc) -- no intermediate
-			// "latest*" list field needed here, unlike skills/quests/
-			// diaries above, since nothing else in this file needs the
-			// raw per-tier counts beyond the one sum patchCombatAchieve-
-			// mentStats computes.
 			if (combatAchievementsDirty)
 			{
 				combatAchievementsDirty = false;
 				patchCombatAchievementStats();
 			}
 
-			// Same deal, for the collection log's own completed/total
-			// counts (see collectionsDirty's field doc) -- distinct
-			// from collectionLogItemCapture just below, which is the
-			// per-item obtained/quantity state, not this pair of sums.
 			if (collectionsDirty)
 			{
 				collectionsDirty = false;
 				patchCollectionStats();
 			}
 
-			// Unlike every dirty flag above, a collection log item
-			// capture pass doesn't complete on a single event -- the
-			// client dribbles out one script firing per obtained item
-			// with no explicit "that's all of them" signal, so this is
-			// collectionLogItemCapture deciding, tick by tick, that no
-			// new item has arrived in a couple of ticks and the pass
-			// already in flight (if any -- most ticks there isn't one)
-			// is therefore finished. See its own onGameTick doc.
+			// A collection log item capture does not complete on a single event: the client
+			// fires one script per obtained item with no end marker. collectionLogItemCapture
+			// decides a pass is finished once no new item has arrived for a couple of ticks.
 			if (collectionLogItemCapture.onGameTick(client))
 			{
 				List<MyscapeClient.CollectionLogItem> items = new ArrayList<>();
@@ -2731,11 +1749,6 @@ public class MyscapePlugin extends Plugin
 				scheduleSyncDebounced();
 			}
 
-			// Same deal, for the Master Scroll Book (see
-			// masterScrollBookDirty's field doc) -- set from onWidgetLoaded
-			// above rather than an ItemContainerChanged branch, since this
-			// is the only source in this file with no ItemContainer to key
-			// off of.
 			if (masterScrollBookDirty)
 			{
 				masterScrollBookDirty = false;
@@ -2743,11 +1756,6 @@ public class MyscapePlugin extends Plugin
 				scheduleSyncDebounced();
 			}
 
-			// Same deal, for the Character Summary panel (see
-			// characterSummaryRereadTicksLeft's field doc for why this is
-			// a countdown rather than a one-shot flag) -- also set only
-			// from onWidgetLoaded, for the same "no ItemContainer/varbit
-			// to react to" reason as the Master Scroll Book just above.
 			if (characterSummaryRereadTicksLeft > 0)
 			{
 				characterSummaryRereadTicksLeft--;
@@ -2756,44 +1764,17 @@ public class MyscapePlugin extends Plugin
 				{
 					latestCharacterSummary = summary;
 					scheduleSyncDebounced();
-					// readCharacterSummary above deliberately zeroes
-					// combatTaskTierCompleted (see its own comment) and
-					// relies on patchCombatAchievementStats to fill it
-					// in for real -- but that only otherwise runs when
-					// combatAchievementsDirty happens to already be
-					// true, which isn't guaranteed on the very tick this
-					// baseline is first established (nor on any tick
-					// before the player next completes a fresh combat
-					// achievement task). Calling it here too means the
-					// per-tier breakdown is correct from the moment the
-					// Character Summary panel is first opened, not just
-					// from the next task completed afterward -- the gap
-					// this closes is exactly why an account with
-					// pre-existing combat achievement progress could
-					// open the panel and still see nothing but em
-					// dashes on the website's Combat Achievements
-					// section.
+					// readCharacterSummary zeroes combatTaskTierCompleted. Patch it here so the
+					// per-tier breakdown is correct as soon as the panel is first opened, instead of
+					// only after the next combat task is completed.
 					patchCombatAchievementStats();
 				}
 			}
 
-			// Consumes pendingContainerRereadTicks (see its own field doc,
-			// and onWidgetLoaded above for how entries get queued): once
-			// this tick is strictly after the tick a storage's widget
-			// loaded on, its container is read explicitly now rather
-			// than relying on ItemContainerChanged, which the game
-			// engine skips firing when a virtual storage was already
-			// empty. Most containers are already populated by that next
-			// tick, but not always guaranteed to be (see
-			// MAX_CONTAINER_REREAD_WAIT_TICKS' own doc) -- a still-null
-			// read keeps its entry queued and is retried on the ticks
-			// after, up to that cap, rather than giving up on the first
-			// miss. Removes each entry through the iterator itself (not
-			// a plain Map.remove call, which would throw
-			// ConcurrentModificationException mid-iteration) only once
-			// it's either successfully applied or past that cap, so a
-			// successful re-read still only ever fires once per queued
-			// open.
+			// Consume pendingContainerRereadTicks: once this tick is after the widget's, read the
+			// container explicitly, since no ItemContainerChanged fires for an already-empty
+			// storage. A null read stays queued until MAX_CONTAINER_REREAD_WAIT_TICKS passes.
+			// Entries are removed via the iterator to avoid a ConcurrentModificationException.
 			if (!pendingContainerRereadTicks.isEmpty())
 			{
 				int currentTick = client.getTickCount();
@@ -2822,17 +1803,9 @@ public class MyscapePlugin extends Plugin
 				}
 			}
 
-			// onGameStateChanged (below) fires the instant the game
-			// state flips to LOGGED_IN, but getAccountHash() isn't
-			// populated until this tick handler runs afterward -- so
-			// the panel's very first re-check, done from that event,
-			// always read a stale null and got stuck showing "log in
-			// first" even once the player genuinely was logged in (this
-			// also covers starting the plugin while already in-game,
-			// where no GameStateChanged fires at all). Telling the
-			// panel again right here, the moment the hash actually
-			// becomes available, is what the state-changed notification
-			// was supposed to guarantee in the first place.
+			// onGameStateChanged fires when the state flips to LOGGED_IN, but getAccountHash()
+			// is not populated until this tick (and no event fires at all if the plugin starts
+			// while already in game). Notify the panel again once the hash is available.
 			if (justBecameAvailable)
 			{
 				if (panel != null)
@@ -2840,16 +1813,8 @@ public class MyscapePlugin extends Plugin
 					panel.onGameStateChanged();
 				}
 
-				// Unlike the bank (which only ever reports contents once
-				// the player has opened it, and so is left to
-				// onItemContainerChanged), inventory and worn equipment
-				// are always populated the moment a character is logged
-				// in -- capturing them here, on the client thread, means
-				// a fresh login syncs an accurate "already own" snapshot
-				// right away rather than waiting for the player to
-				// happen to touch either one first. This runs on the
-				// client thread (onGameTick is only ever called there),
-				// so reading the containers directly here is safe.
+				// Inventory and equipment are populated at login, unlike the bank, so capture
+				// them now for an accurate initial snapshot.
 				ItemContainer inventory = client.getItemContainer(InventoryID.INV);
 				if (inventory != null)
 				{
@@ -2860,38 +1825,13 @@ public class MyscapePlugin extends Plugin
 				{
 					latestEquipmentItems = readEquipmentItems(equipment);
 				}
-				// Potion Storage has no login-time freebie the way
-				// inventory/equipment do (nothing hands back its
-				// contents just because the player logged in) -- but it
-				// has the opposite problem left unhandled before: with
-				// no ItemContainer of its own, the ONLY thing that ever
-				// triggered a read was potionStorageDirty, so a session
-				// that never happened to touch a tracked base-var potion
-				// left it unread for the whole session. Reading it once
-				// here guarantees every session starts with a real
-				// snapshot regardless of what does or doesn't get
-				// deposited/withdrawn afterward; the periodic fallback
-				// (see POTION_STORAGE_REFRESH_INTERVAL_TICKS) keeps it
-				// honest from here on.
+				// Potion Storage has no container and is otherwise read only after a tracked
+				// varp fires, so read it once here. The periodic refresh keeps it current.
 				latestPotionStorageItems = readPotionStorageItems();
 				ticksSincePotionStorageRefresh = 0;
-				// Same reasoning as inventory/equipment just above: a Rune
-				// Pouch stocked before this plugin ever loaded (or before
-				// this login) has no "change" event left to fire for
-				// state that was already set, so it's captured here too
-				// rather than only ever reacting to onVarbitChanged/
-				// onItemContainerChanged from this point forward.
 				latestRunePouchItems = readRunePouchItems();
-				// Same reasoning again, for skills/quests/diaries: all
-				// three are already fully known the instant login
-				// finishes (skill levels don't need to be trained this
-				// session, quests/diaries don't need to be completed this
-				// session, to be worth reporting) -- captured here rather
-				// than only ever reacting to onStatChanged/onWidgetLoaded/
-				// onVarbitChanged from this point forward, so a fresh
-				// install reports a player's already-existing progress
-				// right away instead of waiting for the next change in
-				// each.
+				// Skills, quests and diaries are fully known at login. Capture them now so
+				// existing progress is reported without waiting for a change.
 				latestSkillItems = readSkills();
 				latestCompletedQuestNames = readCompletedQuestNames();
 				latestInProgressQuestNames = readInProgressQuestNames();
@@ -2901,31 +1841,19 @@ public class MyscapePlugin extends Plugin
 		}
 	}
 
-	/** The account hash to link with, or null if not currently logged
-	 * into the game -- safe to call from the Swing EDT (see the field
-	 * comment above). */
+	/** The account hash to link with, or null if not logged in. Safe to call from the EDT. */
 	Long getAccountHash()
 	{
 		return currentAccountHash;
 	}
 
-	/** The current display name, or null if not yet known -- purely
-	 * informational (sent once at link time so the dashboard has
-	 * something to show before the server hears from RuneLite again;
-	 * the account hash, not this, is what actually identifies the
-	 * account). Safe to call from the Swing EDT. */
+	/** The current display name, or null if not yet known. Informational only. Safe to call from the EDT. */
 	String getRuneScapeName()
 	{
 		return currentRuneScapeName;
 	}
 
-	/** Fired once a capture attempt from captureCharacterModel below
-	 * finishes, one way or the other -- always on the RuneLite client
-	 * thread (see that method's own doc), never the Swing EDT.
-	 * MyscapePanel's own call site is what hops back to the EDT for
-	 * anything UI-facing, the same split every other MyscapeClient
-	 * callback interface (SyncCallback, LinkCallback, ...) already
-	 * leaves to its own callers. */
+	/** Called on the client thread (not the EDT) when a model capture finishes. */
 	interface ModelCaptureCallback
 	{
 		void onSuccess(byte[] glb);
@@ -2933,26 +1861,11 @@ public class MyscapePlugin extends Plugin
 		void onFailure(String message);
 	}
 
-	/** Captures the local player's current model -- base skeleton,
-	 * every equipped item, and current animation pose, all already
-	 * composited by the game engine exactly as
-	 * {@code Renderable#getModel()} hands it to the client's own
-	 * renderer -- as a standalone .glb file, for MyscapePanel's
-	 * "UPDATE CHARACTER MODEL" button (see MyscapeClient#syncCharacterModel
-	 * for what happens to the bytes next). See package
-	 * io.myscape.plugin.modelexport's own docs (ModelExporter,
-	 * ModelMeshBuilder, GlbWriter) for the actual conversion.
-	 *
-	 * <p>A Model's own vertex/face arrays are only valid to read while
-	 * still on the client thread (RuneLite reuses/pools the backing
-	 * arrays across frames for some renderables -- see
-	 * ModelMeshBuilder's own top-of-file doc in the modelexport
-	 * package), so the whole read-and-convert pass runs inside one
-	 * clientThread.invoke: by the time callback fires, the live Model
-	 * has already been fully copied out into a plain byte[], safe to
-	 * hand off anywhere. callback itself still runs on the client
-	 * thread, not the Swing EDT -- see ModelCaptureCallback's own doc
-	 * above. */
+	/**
+	 * Captures the local player's current model as a .glb file. A Model's vertex and face
+	 * arrays are only valid on the client thread, so the read and conversion run in one
+	 * clientThread.invoke. See the modelexport package.
+	 */
 	void captureCharacterModel(ModelCaptureCallback callback)
 	{
 		clientThread.invoke(() ->
@@ -2971,16 +1884,8 @@ public class MyscapePlugin extends Plugin
 			}
 			try
 			{
-				// The live client's own TextureProvider, where one's
-				// available, for both its brightness setting (rather than
-				// always falling back to ModelExporter's own 0.8 default --
-				// see HslColor#DEFAULT_BRIGHTNESS's own doc in the
-				// modelexport package for why that matters to a player
-				// who's actually moved that slider) and its real texture
-				// pixel data (see TextureExtractor's own doc) -- without a
-				// TextureProvider this still captures geometry/color fine,
-				// just with every textured face falling back to flat
-				// vertex-color shading instead of its real texture image.
+				// Use the client's TextureProvider if available for its brightness setting and real
+				// texture pixels. Without it, textured faces fall back to flat vertex colours.
 				TextureProvider textureProvider = client.getTextureProvider();
 				byte[] glb = textureProvider != null
 					? ModelExporter.captureGlb(model, textureProvider.getBrightness(), textureProvider)
