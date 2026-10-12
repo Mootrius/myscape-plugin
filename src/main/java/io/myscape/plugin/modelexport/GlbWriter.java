@@ -1,6 +1,5 @@
 package io.myscape.plugin.modelexport;
 
-import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import java.io.ByteArrayOutputStream;
@@ -50,8 +49,6 @@ final class GlbWriter
 	// glTF sampler enums (WebGL/OpenGL constants).
 	private static final int FILTER_NEAREST = 9728;
 	private static final int WRAP_REPEAT = 10497;
-
-	private static final Gson GSON = new Gson();
 
 	/** Writes {@code mesh} with untextured materials. */
 	static byte[] write(MeshData mesh)
@@ -201,7 +198,7 @@ final class GlbWriter
 		root.add("bufferViews", bufferViews);
 		root.add("buffers", buffersJson);
 
-		byte[] json = GSON.toJson(root).getBytes(StandardCharsets.UTF_8);
+		byte[] json = root.toString().getBytes(StandardCharsets.UTF_8);
 		return assembleGlb(json, bin.toByteArray());
 	}
 

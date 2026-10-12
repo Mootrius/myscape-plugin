@@ -23,16 +23,18 @@ import okhttp3.Response;
 class MyscapeClient
 {
 	private static final MediaType JSON = MediaType.parse("application/json; charset=utf-8");
-	private static final Gson GSON = new Gson();
 	private static final String API_BASE_URL = "https://myscape.io";
 
 	private final OkHttpClient httpClient;
 	private final ConfigManager configManager;
+	// The client's own injected Gson (Plugin Hub rejects plugins that create their own).
+	private final Gson gson;
 
-	MyscapeClient(OkHttpClient httpClient, ConfigManager configManager)
+	MyscapeClient(OkHttpClient httpClient, ConfigManager configManager, Gson gson)
 	{
 		this.httpClient = httpClient;
 		this.configManager = configManager;
+		this.gson = gson;
 	}
 
 	/** Id, name and quantity of one stored item. Each container has its own
@@ -356,7 +358,7 @@ class MyscapeClient
 
 		Request request = new Request.Builder()
 			.url(apiUrl("/api/link/exchange"))
-			.post(RequestBody.create(JSON, GSON.toJson(body)))
+			.post(RequestBody.create(JSON, gson.toJson(body)))
 			.build();
 
 		httpClient.newCall(request).enqueue(new Callback()
@@ -378,7 +380,7 @@ class MyscapeClient
 						callback.onFailure(describeError(r.code(), responseBody));
 						return;
 					}
-					JsonObject json = GSON.fromJson(responseBody, JsonObject.class);
+					JsonObject json = gson.fromJson(responseBody, JsonObject.class);
 					String apiKey = json.get("api_key").getAsString();
 					String playerId = json.get("player_id").getAsString();
 					configManager.setConfiguration(MyscapeConfig.GROUP, MyscapeConfig.API_KEY_KEY, apiKey);
@@ -439,7 +441,7 @@ class MyscapeClient
 						callback.onError(describeError(r.code(), responseBody));
 						return;
 					}
-					JsonObject json = GSON.fromJson(responseBody, JsonObject.class);
+					JsonObject json = gson.fromJson(responseBody, JsonObject.class);
 					String name = json.has("runescape_name") && !json.get("runescape_name").isJsonNull()
 						? json.get("runescape_name").getAsString()
 						: null;
@@ -766,7 +768,7 @@ class MyscapeClient
 		Request request = new Request.Builder()
 			.url(apiUrl("/api/players/me/loot"))
 			.header("Authorization", "Bearer " + apiKey)
-			.post(RequestBody.create(JSON, GSON.toJson(body)))
+			.post(RequestBody.create(JSON, gson.toJson(body)))
 			.build();
 
 		httpClient.newCall(request).enqueue(new Callback()
@@ -794,7 +796,7 @@ class MyscapeClient
 						callback.onFailure(describeError(r.code(), responseBody));
 						return;
 					}
-					JsonObject json = GSON.fromJson(responseBody, JsonObject.class);
+					JsonObject json = gson.fromJson(responseBody, JsonObject.class);
 					callback.onSuccess(json.get("added_count").getAsInt());
 				}
 				catch (Exception e)
@@ -869,7 +871,7 @@ class MyscapeClient
 		Request request = new Request.Builder()
 			.url(apiUrl(path))
 			.header("Authorization", "Bearer " + apiKey)
-			.post(RequestBody.create(JSON, GSON.toJson(body)))
+			.post(RequestBody.create(JSON, gson.toJson(body)))
 			.build();
 
 		httpClient.newCall(request).enqueue(new Callback()
@@ -898,7 +900,7 @@ class MyscapeClient
 						callback.onFailure(describeError(r.code(), responseBody));
 						return;
 					}
-					JsonObject json = GSON.fromJson(responseBody, JsonObject.class);
+					JsonObject json = gson.fromJson(responseBody, JsonObject.class);
 					callback.onSuccess(json.get(countField).getAsInt());
 				}
 				catch (Exception e)
@@ -922,11 +924,11 @@ class MyscapeClient
 		return API_BASE_URL + path;
 	}
 
-	private static String describeError(int code, String body)
+	private String describeError(int code, String body)
 	{
 		try
 		{
-			JsonObject json = GSON.fromJson(body, JsonObject.class);
+			JsonObject json = gson.fromJson(body, JsonObject.class);
 			if (json != null && json.has("detail") && json.get("detail").isJsonPrimitive())
 			{
 				return json.get("detail").getAsString();

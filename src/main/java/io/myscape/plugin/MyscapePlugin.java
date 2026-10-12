@@ -1,5 +1,6 @@
 package io.myscape.plugin;
 
+import com.google.gson.Gson;
 import com.google.inject.Provides;
 import io.myscape.plugin.collectionlog.CollectionLogItemCapture;
 import io.myscape.plugin.modelexport.ModelExporter;
@@ -98,6 +99,9 @@ public class MyscapePlugin extends Plugin
 
 	@Inject
 	private OkHttpClient okHttpClient;
+
+	@Inject
+	private Gson gson;
 
 	@Inject
 	private MyscapeConfig config;
@@ -400,7 +404,7 @@ public class MyscapePlugin extends Plugin
 	@Override
 	protected void startUp()
 	{
-		MyscapeClient apiClient = new MyscapeClient(okHttpClient, configManager);
+		MyscapeClient apiClient = new MyscapeClient(okHttpClient, configManager, gson);
 		panel = new MyscapePanel(apiClient, this);
 
 		BufferedImage icon = ImageUtil.loadImageResource(getClass(), "icon.png");
