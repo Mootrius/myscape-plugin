@@ -83,6 +83,9 @@ task run(type: JavaExec) {
     // client, sun.awt, com.apple.eawt exist only on macOS JDKs, so this
     // is scoped to macOS rather than added unconditionally.
     if (org.gradle.internal.os.OperatingSystem.current().isMacOsX()) {
-        jvmArgs += ['--add-opens=java.desktop/com.apple.eawt=ALL-UNNAMED', '--add-opens=java.desktop/sun.awt=ALL-UNNAMED']
+        jvmArgs += [
+            '--add-opens=java.desktop/com.apple.eawt=ALL-UNNAMED',
+            '--add-opens=java.desktop/sun.awt=ALL-UNNAMED'
+        ]
     }
 }
