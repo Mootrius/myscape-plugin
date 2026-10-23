@@ -205,16 +205,23 @@ class MyscapeClient
 		}
 	}
 
-	/** The highest completed tier for one achievement diary area. Areas with nothing completed are omitted. */
+	private static final String[] DIARY_TIER_NAMES = {"easy", "medium", "hard", "elite"};
+
+	/**
+	 * One achievement diary area: its highest completed tier (null if none) and the tasks
+	 * completed per tier, easy to elite (null if unknown). Areas with neither are omitted.
+	 */
 	static final class DiaryTierItem
 	{
 		final String area;
 		final String tier;
+		final int[] taskCounts;
 
-		DiaryTierItem(String area, String tier)
+		DiaryTierItem(String area, String tier, int[] taskCounts)
 		{
 			this.area = area;
 			this.tier = tier;
+			this.taskCounts = taskCounts;
 		}
 	}
 
@@ -657,20 +664,35 @@ class MyscapeClient
 		syncPayload("/api/players/me/quests", body, "quest_count", callback);
 	}
 
-	/** Replaces the highest completed diary tier per area on the server
-	 * (POST /api/players/me/diaries). */
+	/** Replaces the highest completed diary tier and the per-tier task counts per area on the
+	 * server (POST /api/players/me/diaries). */
 	void syncDiaries(List<DiaryTierItem> diaryTiers, SyncCallback callback)
 	{
 		JsonArray diariesJson = new JsonArray();
-		for (DiaryTierItem tier : diaryTiers)
+		JsonArray taskCountsJson = new JsonArray();
+		for (DiaryTierItem item : diaryTiers)
 		{
-			JsonObject tierJson = new JsonObject();
-			tierJson.addProperty("area", tier.area);
-			tierJson.addProperty("tier", tier.tier);
-			diariesJson.add(tierJson);
+			if (item.tier != null)
+			{
+				JsonObject tierJson = new JsonObject();
+				tierJson.addProperty("area", item.area);
+				tierJson.addProperty("tier", item.tier);
+				diariesJson.add(tierJson);
+			}
+			if (item.taskCounts != null && item.taskCounts.length == DIARY_TIER_NAMES.length)
+			{
+				JsonObject countsJson = new JsonObject();
+				countsJson.addProperty("area", item.area);
+				for (int i = 0; i < DIARY_TIER_NAMES.length; i++)
+				{
+					countsJson.addProperty(DIARY_TIER_NAMES[i], item.taskCounts[i]);
+				}
+				taskCountsJson.add(countsJson);
+			}
 		}
 		JsonObject body = new JsonObject();
 		body.add("diary_tiers", diariesJson);
+		body.add("task_counts", taskCountsJson);
 		syncPayload("/api/players/me/diaries", body, "area_count", callback);
 	}
 

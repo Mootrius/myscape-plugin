@@ -266,6 +266,19 @@ public class MyscapePlugin extends Plugin
 		return Collections.unmodifiableSet(ids);
 	}
 
+	// Achievement diary task counts: the game keeps "tasks completed" per area and tier in six
+	// consecutive varps (DIARY_TASK_COUNT_FIRST_VARP). Each varp holds two areas, 16 bits
+	// each, in the order below (low half first). Within an area the tiers run easy to elite
+	// in 4-bit fields, except Karamja, whose medium count (up to 19) takes 5 bits and
+	// elite 3 bits.
+	private static final int DIARY_TASK_COUNT_FIRST_VARP = VarPlayerID.ACHIEVEMENT_DIARY_TASKCOUNTS;
+	private static final String[] DIARY_TASK_COUNT_AREAS = {
+		"karamja", "ardougne", "desert", "falador", "fremennik", "kandarin",
+		"lumbridge_draynor", "morytania", "varrock", "wilderness", "western_provinces", "kourend_kebos",
+	};
+	private static final int[] DIARY_TASK_COUNT_WIDTHS_DEFAULT = {4, 4, 4, 4};
+	private static final int[] DIARY_TASK_COUNT_WIDTHS_KARAMJA = {4, 5, 4, 3};
+
 	// Combat achievements: one "tasks completed" varbit per tier, summed into
 	// combatTasksCompleted. No varbit exists for the total (see combatAchievementsDirty).
 	private static final int[] COMBAT_ACHIEVEMENT_COMPLETED_VARBITS = {
@@ -792,8 +805,9 @@ public class MyscapePlugin extends Plugin
 	}
 
 	/**
-	 * The highest completed tier per diary area, omitting areas with none. Stops at the
-	 * first incomplete tier. Client thread only.
+	 * Per diary area: the highest completed tier (null if none) and the number of tasks
+	 * completed in each tier. Areas with neither are omitted. The tier stops at the first
+	 * incomplete tier. Client thread only.
 	 */
 	private List<MyscapeClient.DiaryTierItem> readDiaryTiers()
 	{
@@ -812,12 +826,45 @@ public class MyscapePlugin extends Plugin
 				}
 				highestTier = DIARY_TIER_NAMES[i];
 			}
-			if (highestTier != null)
+			int[] taskCounts = readDiaryTaskCounts(area);
+			boolean anyTasks = false;
+			for (int count : taskCounts)
 			{
-				items.add(new MyscapeClient.DiaryTierItem(area, highestTier));
+				anyTasks |= count > 0;
+			}
+			if (highestTier != null || anyTasks)
+			{
+				items.add(new MyscapeClient.DiaryTierItem(area, highestTier, taskCounts));
 			}
 		}
 		return items;
+	}
+
+	/** Tasks completed per tier (easy to elite) for one diary area. Client thread only. */
+	private int[] readDiaryTaskCounts(String area)
+	{
+		int index = -1;
+		for (int i = 0; i < DIARY_TASK_COUNT_AREAS.length; i++)
+		{
+			if (DIARY_TASK_COUNT_AREAS[i].equals(area))
+			{
+				index = i;
+				break;
+			}
+		}
+		int[] counts = new int[DIARY_TIER_NAMES.length];
+		if (index < 0)
+		{
+			return counts;
+		}
+		int packed = client.getVarpValue(DIARY_TASK_COUNT_FIRST_VARP + index / 2) >>> (16 * (index % 2));
+		int[] widths = area.equals("karamja") ? DIARY_TASK_COUNT_WIDTHS_KARAMJA : DIARY_TASK_COUNT_WIDTHS_DEFAULT;
+		for (int i = 0; i < counts.length; i++)
+		{
+			counts[i] = packed & ((1 << widths[i]) - 1);
+			packed >>>= widths[i];
+		}
+		return counts;
 	}
 
 	// The Costume Room's contents (all furniture pieces) arrive on one container id.
@@ -1110,6 +1157,10 @@ public class MyscapePlugin extends Plugin
 		if (varpId >= POTION_STORAGE_VARP_MIN && varpId <= POTION_STORAGE_VARP_MAX)
 		{
 			potionStorageDirty = true;
+		}
+		if (varpId >= DIARY_TASK_COUNT_FIRST_VARP && varpId < DIARY_TASK_COUNT_FIRST_VARP + DIARY_TASK_COUNT_AREAS.length / 2)
+		{
+			diariesDirty = true;
 		}
 		if (varpId == VarPlayerID.COLLECTION_COUNT || varpId == VarPlayerID.COLLECTION_COUNT_MAX)
 		{
@@ -1471,8 +1522,9 @@ public class MyscapePlugin extends Plugin
 	}
 
 	/**
-	 * Patches the achievement counts from latestDiaryTierItems. An area's entry is its
-	 * highest tier, so "elite" counts as 4 completed tiers. The total is 12 areas x 4.
+	 * Patches the achievement count from latestDiaryTierItems: the number of tasks completed
+	 * across all areas, with the total left as the Character Summary last reported it. Before
+	 * that total is known it falls back to counting completed tiers out of 12 areas x 4.
 	 */
 	private void patchDiaryStats()
 	{
@@ -1480,24 +1532,34 @@ public class MyscapePlugin extends Plugin
 		{
 			return;
 		}
-		int completed = 0;
+		int tasks = 0;
+		int tiers = 0;
 		for (MyscapeClient.DiaryTierItem item : latestDiaryTierItems)
 		{
+			if (item.taskCounts != null)
+			{
+				for (int count : item.taskCounts)
+				{
+					tasks += count;
+				}
+			}
 			for (int i = 0; i < DIARY_TIER_NAMES.length; i++)
 			{
 				if (DIARY_TIER_NAMES[i].equals(item.tier))
 				{
-					completed += i + 1;
+					tiers += i + 1;
 					break;
 				}
 			}
 		}
-		int total = DIARY_VARBIT_IDS.size();
-		final int finalCompleted = completed;
+		final int finalTasks = tasks;
+		final int finalTiers = tiers;
+		final int tierTotal = DIARY_VARBIT_IDS.size();
 		patchCharacterSummary(prev -> new MyscapeClient.CharacterSummaryItem(
 			prev.combatLevel, prev.totalLevel, prev.totalXp,
 			prev.questsCompleted, prev.questsTotal,
-			finalCompleted, total,
+			prev.achievementsTotal > tierTotal ? finalTasks : finalTiers,
+			prev.achievementsTotal > tierTotal ? prev.achievementsTotal : tierTotal,
 			prev.combatTasksCompleted, prev.combatTasksTotal,
 			prev.collectionsCompleted, prev.collectionsTotal,
 			prev.combatTaskTierCompleted,
