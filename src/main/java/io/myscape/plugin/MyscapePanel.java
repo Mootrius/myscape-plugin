@@ -166,7 +166,7 @@ class MyscapePanel extends PluginPanel
 		row.setOpaque(false);
 		row.add(buildSocialButton("myscape_home.png", "myscape.io", "https://myscape.io"));
 		row.add(buildSocialButton("github.png", "GitHub", "https://github.com/Mootrius/myscape-plugin"));
-		row.add(buildSocialButton("discord.png", "Discord", "https://discord.gg/myscape"));
+		row.add(buildSocialButton("discord.png", "Discord", "https://discord.gg/mootrius"));
 		row.add(buildSocialButton("patreon.png", "Patreon", "https://patreon.com/myscape"));
 		return row;
 	}

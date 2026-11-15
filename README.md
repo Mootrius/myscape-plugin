@@ -66,7 +66,7 @@ The only cookie we keep is to keep you logged in to the site, so that you don't 
 
 ## Help
 
-If you find a bug, in either the plugin or the site, please join the [myscape Discord server](https://discord.gg/myscape) and report it there.
+If you find a bug, in either the plugin or the site, please join the [myscape Discord server](https://discord.gg/mootrius) and report it there.
 
 ## Support
 
@@ -77,6 +77,6 @@ myscape is completely free and always will be. If you would like to support the 
 <p align="center">
   <a href="https://myscape.io"><img src="docs/icon-site.png" alt="myscape.io" width="40"></a>&nbsp;&nbsp;
   <a href="https://github.com/Mootrius"><img src="docs/icon-github.png" alt="GitHub" width="40"></a>&nbsp;&nbsp;
-  <a href="https://discord.gg/myscape"><img src="docs/icon-discord.png" alt="Discord" width="40"></a>&nbsp;&nbsp;
+  <a href="https://discord.gg/mootrius"><img src="docs/icon-discord.png" alt="Discord" width="40"></a>&nbsp;&nbsp;
   <a href="https://patreon.com/myscape"><img src="docs/icon-patreon.png" alt="Patreon" width="40"></a>
 </p>
